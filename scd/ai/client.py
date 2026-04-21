@@ -20,6 +20,14 @@ INITIAL_BACKOFF = 2.0
 ToolHandler = Callable[[str, dict], Coroutine[Any, Any, str]]
 
 
+def _extract_text_from_content(content: list) -> str:
+    """Extract text from response content blocks, skipping ThinkingBlock etc."""
+    for block in content:
+        if hasattr(block, "type") and block.type == "text" and hasattr(block, "text"):
+            return block.text
+    return ""
+
+
 class ClaudeClient:
     """Async wrapper around the Anthropic API with rate limiting, retries, and tool use."""
 
@@ -46,7 +54,7 @@ class ClaudeClient:
             response = await self._api_call(
                 system=system, messages=messages, max_tokens=max_tokens,
             )
-            text = response.content[0].text if response.content else ""
+            text = _extract_text_from_content(response.content) if response.content else ""
             try:
                 return self._extract_json(text)
             except (json.JSONDecodeError, ValueError):
@@ -70,8 +78,7 @@ class ClaudeClient:
             messages=[{"role": "user", "content": user}],
             max_tokens=max_tokens,
         )
-        text = response.content[0].text
-        return text
+        return _extract_text_from_content(response.content)
 
     async def agent_loop(
         self,
