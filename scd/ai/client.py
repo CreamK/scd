@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Callable, Coroutine
 
 import anthropic
@@ -13,6 +14,7 @@ from scd.config import ScdConfig
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+JSON_PARSE_RETRIES = 2
 INITIAL_BACKOFF = 2.0
 
 ToolHandler = Callable[[str, dict], Coroutine[Any, Any, str]]
@@ -37,9 +39,29 @@ class ClaudeClient:
         self._lock = asyncio.Lock()
 
     async def ask_json(self, system: str, user: str, max_tokens: int = 8192) -> dict:
-        """Send a prompt and parse the response as JSON."""
-        text = await self.ask(system, user, max_tokens)
-        return self._extract_json(text)
+        """Send a prompt and parse the response as JSON, with auto-retry on parse failure."""
+        messages = [{"role": "user", "content": user}]
+
+        for attempt in range(1 + JSON_PARSE_RETRIES):
+            response = await self._api_call(
+                system=system, messages=messages, max_tokens=max_tokens,
+            )
+            text = response.content[0].text if response.content else ""
+            try:
+                return self._extract_json(text)
+            except (json.JSONDecodeError, ValueError):
+                if attempt >= JSON_PARSE_RETRIES:
+                    raise
+                logger.warning(
+                    "JSON parse failed (attempt %d/%d), asking model to fix",
+                    attempt + 1, 1 + JSON_PARSE_RETRIES,
+                )
+                messages.append({"role": "assistant", "content": text})
+                messages.append({
+                    "role": "user",
+                    "content": "Your previous response was not valid JSON. "
+                    "Please respond with ONLY valid JSON, no markdown fences, no explanation.",
+                })
 
     async def ask(self, system: str, user: str, max_tokens: int = 8192) -> str:
         """Send a prompt and return raw text response."""
@@ -159,24 +181,53 @@ class ClaudeClient:
 
     @staticmethod
     def _extract_json(text: str) -> dict:
-        """Extract JSON from response text, handling markdown code blocks."""
+        """Extract JSON from response text, handling markdown blocks and mixed content."""
         text = text.strip()
         if not text:
             logger.warning("Empty response from API, returning empty dict")
             return {}
 
-        if text.startswith("```"):
-            lines = text.split("\n")
-            start = 1
-            end = len(lines) - 1
-            if lines[end].strip() == "```":
-                pass
-            else:
-                end = len(lines)
-            text = "\n".join(lines[start:end]).strip()
+        # 1) Strip markdown code fences
+        fence_match = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n\s*```", text)
+        if fence_match:
+            text = fence_match.group(1).strip()
 
+        # 2) Try direct parse
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            logger.error("Failed to parse JSON: %s\nResponse text: %s", e, text[:500])
-            raise
+        except json.JSONDecodeError:
+            pass
+
+        # 3) Find the first { ... } or [ ... ] block in the text
+        for opener, closer in [("{", "}"), ("[", "]")]:
+            start = text.find(opener)
+            if start == -1:
+                continue
+            depth = 0
+            in_str = False
+            escape = False
+            for i in range(start, len(text)):
+                ch = text[i]
+                if escape:
+                    escape = False
+                    continue
+                if ch == "\\":
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start:i + 1])
+                        except json.JSONDecodeError:
+                            break
+
+        logger.error("Failed to extract JSON from response: %s", text[:500])
+        raise ValueError(f"Cannot extract JSON from response: {text[:200]}")
