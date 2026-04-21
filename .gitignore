@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 .scd.env
 reps/
+output/

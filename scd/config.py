@@ -37,6 +37,8 @@ DEFAULT_IGNORE_DIRS = {
     "venv", ".venv", "env", ".env",
     ".idea", ".vscode", ".cursor",
     "coverage", ".nyc_output", "htmlcov",
+    "test", "tests", "testing", "test_data", "testdata",
+    "__tests__", "__test__", "spec", "specs",
 }
 
 DEFAULT_IGNORE_FILES = {
@@ -51,7 +53,7 @@ class ScdConfig:
     api_key: str | None = None
     base_url: str | None = None
     concurrency: int = 10
-    similarity_threshold: int = 5
+    similarity_threshold: int = 20
     max_file_lines: int = 10000
     model: str = "claude-sonnet-4-20250514"
     output_format: str = "markdown"

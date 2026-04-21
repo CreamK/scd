@@ -9,11 +9,12 @@ from scd.ai.prompts import FUNCTION_COMPARE_SYSTEM, FUNCTION_COMPARE_USER
 from scd.config import ScdConfig
 from scd.models import (
     CompareResult,
+    DimensionScores,
     DirMatch,
     FuncLocation,
     RepoScanResult,
     SimilarFunction,
-    SimilarityType,
+    SimilarityLevel,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,11 +43,23 @@ def _parse_similar_functions(data: dict, file_a: str, file_b: str) -> list[Simil
         try:
             fa = item["func_a"]
             fb = item["func_b"]
-            sim_type_str = item.get("similarity_type", "partial")
+
+            raw_scores = item.get("scores", {})
+            scores = DimensionScores(
+                data_structure=int(raw_scores.get("data_structure", 0)),
+                function_signature=int(raw_scores.get("function_signature", 0)),
+                algorithm_logic=int(raw_scores.get("algorithm_logic", 0)),
+                naming_convention=int(raw_scores.get("naming_convention", 0)),
+                protocol_conformance=int(raw_scores.get("protocol_conformance", 0)),
+            )
+
+            composite = int(item.get("composite_score", 0))
+
+            level_str = item.get("similarity_level", "very_low")
             try:
-                sim_type = SimilarityType(sim_type_str)
+                level = SimilarityLevel(level_str)
             except ValueError:
-                sim_type = SimilarityType.PARTIAL
+                level = SimilarityLevel.VERY_LOW
 
             results.append(SimilarFunction(
                 func_a=FuncLocation(
@@ -61,8 +74,9 @@ def _parse_similar_functions(data: dict, file_a: str, file_b: str) -> list[Simil
                     line_start=fb.get("line_start", 0),
                     line_end=fb.get("line_end", 0),
                 ),
-                similarity_score=int(item.get("similarity_score", 0)),
-                similarity_type=sim_type,
+                composite_score=composite,
+                similarity_level=level,
+                scores=scores,
                 analysis=item.get("analysis", ""),
             ))
         except (KeyError, TypeError, ValueError) as e:
@@ -143,7 +157,7 @@ def deduplicate_results(results: list[CompareResult]) -> list[CompareResult]:
     for cr in results:
         for sf in cr.similar_functions:
             key = (sf.func_a.file, sf.func_a.name, sf.func_b.file, sf.func_b.name)
-            if key not in best or sf.similarity_score > best[key].similarity_score:
+            if key not in best or sf.composite_score > best[key].composite_score:
                 best[key] = sf
 
     deduped: dict[tuple[str, str], CompareResult] = {}

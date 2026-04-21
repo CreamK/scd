@@ -34,6 +34,7 @@ async def match_directories(
         user=user_msg,
         tools=ALL_TOOLS,
         tool_handler=tool_handler,
+        max_turns=100,
     )
 
     result = DirMatchResult()

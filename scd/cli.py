@@ -35,7 +35,7 @@ def main() -> None:
 @click.option("--output-dir", default="output", help="Output directory for all artifacts (default: output).")
 @click.option("-f", "--format", "fmt", type=click.Choice(["markdown", "json"]), default="markdown", help="Output format.")
 @click.option("-c", "--concurrency", default=10, type=int, help="Max concurrent AI calls.")
-@click.option("-t", "--threshold", default=5, type=int, help="Minimum similarity score (0-10).")
+@click.option("-t", "--threshold", default=20, type=int, help="Minimum composite similarity score (0-100, default 20).")
 @click.option("-m", "--model", default="claude-sonnet-4-20250514", help="Claude model to use.")
 @click.option("--api-key", envvar="ANTHROPIC_API_KEY", default=None, help="Anthropic API key (or set ANTHROPIC_API_KEY env var).")
 @click.option("--base-url", envvar="ANTHROPIC_BASE_URL", default=None, help="Anthropic API base URL (or set ANTHROPIC_BASE_URL env var).")

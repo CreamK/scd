@@ -65,11 +65,20 @@ class DirMatchResult:
     exploration_log: dict = field(default_factory=dict)
 
 
-class SimilarityType(str, Enum):
-    COPY = "copy"
-    LOGIC_IDENTICAL = "logic_identical"
-    PARTIAL = "partial"
-    UNRELATED = "unrelated"
+class SimilarityLevel(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    VERY_LOW = "very_low"
+
+
+@dataclass
+class DimensionScores:
+    data_structure: int = 0
+    function_signature: int = 0
+    algorithm_logic: int = 0
+    naming_convention: int = 0
+    protocol_conformance: int = 0
 
 
 @dataclass
@@ -84,8 +93,9 @@ class FuncLocation:
 class SimilarFunction:
     func_a: FuncLocation
     func_b: FuncLocation
-    similarity_score: int  # 0-10
-    similarity_type: SimilarityType
+    composite_score: int  # 0-100
+    similarity_level: SimilarityLevel
+    scores: DimensionScores
     analysis: str
 
 

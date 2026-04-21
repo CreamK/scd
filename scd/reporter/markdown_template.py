@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from scd.models import ScdReport, SimilarFunction, SimilarityType
+from scd.models import ScdReport, SimilarFunction, SimilarityLevel
 
 
-def _score_badge(score: int) -> str:
-    if score >= 8:
-        return "🔴 HIGH"
-    elif score >= 5:
-        return "🟡 MEDIUM"
-    return "🟢 LOW"
-
-
-def _type_label(t: SimilarityType) -> str:
+def _level_badge(level: SimilarityLevel) -> str:
     return {
-        SimilarityType.COPY: "Copy",
-        SimilarityType.LOGIC_IDENTICAL: "Logic Identical",
-        SimilarityType.PARTIAL: "Partial",
-        SimilarityType.UNRELATED: "Unrelated",
-    }.get(t, t.value)
+        SimilarityLevel.HIGH: "🔴 高",
+        SimilarityLevel.MEDIUM: "🟡 中",
+        SimilarityLevel.LOW: "🟢 低",
+        SimilarityLevel.VERY_LOW: "⚪ 极低",
+    }.get(level, level.value)
+
+
+def _level_label(level: SimilarityLevel) -> str:
+    return {
+        SimilarityLevel.HIGH: "高 (>60%)",
+        SimilarityLevel.MEDIUM: "中 (40-60%)",
+        SimilarityLevel.LOW: "低 (20-40%)",
+        SimilarityLevel.VERY_LOW: "极低 (<20%)",
+    }.get(level, level.value)
 
 
 def render_markdown(report: ScdReport) -> str:
@@ -27,8 +28,8 @@ def render_markdown(report: ScdReport) -> str:
 
     # --- Overview ---
     lines.append("## Overview\n")
-    lines.append(f"| Item | Value |")
-    lines.append(f"|------|-------|")
+    lines.append("| Item | Value |")
+    lines.append("|------|-------|")
     lines.append(f"| Repo A | `{report.repo_a_path}` |")
     lines.append(f"| Repo B | `{report.repo_b_path}` |")
     lines.append(f"| Files in A | {report.repo_a_files} |")
@@ -44,16 +45,18 @@ def render_markdown(report: ScdReport) -> str:
         return "\n".join(lines)
 
     # --- Score Distribution ---
-    high = [f for f in all_funcs if f.similarity_score >= 8]
-    medium = [f for f in all_funcs if 5 <= f.similarity_score < 8]
-    low = [f for f in all_funcs if f.similarity_score < 5]
+    high = [f for f in all_funcs if f.composite_score > 60]
+    medium = [f for f in all_funcs if 40 <= f.composite_score <= 60]
+    low = [f for f in all_funcs if 20 <= f.composite_score < 40]
+    very_low = [f for f in all_funcs if f.composite_score < 20]
 
     lines.append("## Similarity Distribution\n")
-    lines.append(f"| Level | Count |")
-    lines.append(f"|-------|-------|")
-    lines.append(f"| 🔴 High (8-10) | {len(high)} |")
-    lines.append(f"| 🟡 Medium (5-7) | {len(medium)} |")
-    lines.append(f"| 🟢 Low (3-4) | {len(low)} |")
+    lines.append("| Level | Count |")
+    lines.append("|-------|-------|")
+    lines.append(f"| 🔴 高 (>60%) | {len(high)} |")
+    lines.append(f"| 🟡 中 (40-60%) | {len(medium)} |")
+    lines.append(f"| 🟢 低 (20-40%) | {len(low)} |")
+    lines.append(f"| ⚪ 极低 (<20%) | {len(very_low)} |")
     lines.append("")
 
     # --- Directory Match Summary ---
@@ -69,9 +72,9 @@ def render_markdown(report: ScdReport) -> str:
         lines.append("")
 
     # --- Detailed Results ---
-    sorted_funcs = sorted(all_funcs, key=lambda f: -f.similarity_score)
+    sorted_funcs = sorted(all_funcs, key=lambda f: -f.composite_score)
 
-    lines.append("## Similar Functions (sorted by score)\n")
+    lines.append("## Similar Functions (sorted by composite score)\n")
     for sf in sorted_funcs:
         _render_function_pair(lines, sf)
 
@@ -79,10 +82,20 @@ def render_markdown(report: ScdReport) -> str:
 
 
 def _render_function_pair(lines: list[str], sf: SimilarFunction) -> None:
-    badge = _score_badge(sf.similarity_score)
-    lines.append(f"### {badge} — `{sf.func_a.name}` ↔ `{sf.func_b.name}` (Score: {sf.similarity_score}/10)\n")
-    lines.append(f"- **Type:** {_type_label(sf.similarity_type)}")
+    badge = _level_badge(sf.similarity_level)
+    lines.append(f"### {badge} — `{sf.func_a.name}` ↔ `{sf.func_b.name}` (Composite: {sf.composite_score}%)\n")
+    lines.append(f"- **Level:** {_level_label(sf.similarity_level)}")
     lines.append(f"- **File A:** `{sf.func_a.file}` (lines {sf.func_a.line_start}-{sf.func_a.line_end})")
     lines.append(f"- **File B:** `{sf.func_b.file}` (lines {sf.func_b.line_start}-{sf.func_b.line_end})")
+    lines.append("")
+    s = sf.scores
+    lines.append("| Dimension | Weight | Score |")
+    lines.append("|-----------|--------|-------|")
+    lines.append(f"| Data Structure | 25% | {s.data_structure}% |")
+    lines.append(f"| Function Signature | 25% | {s.function_signature}% |")
+    lines.append(f"| Algorithm Logic | 25% | {s.algorithm_logic}% |")
+    lines.append(f"| Naming Convention | 15% | {s.naming_convention}% |")
+    lines.append(f"| Protocol Conformance | 10% | {s.protocol_conformance}% |")
+    lines.append("")
     lines.append(f"- **Analysis:** {sf.analysis}")
     lines.append("")
