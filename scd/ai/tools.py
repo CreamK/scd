@@ -3,10 +3,49 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from scd.config import SOURCE_EXTENSIONS
 from scd.scanner.ignore_rules import IgnoreRules
+
+
+@dataclass
+class ExplorationTracker:
+    """Records which directories/files the AI explores during agent loops."""
+
+    listed_dirs: list[dict] = field(default_factory=list)
+    read_files: list[dict] = field(default_factory=list)
+    _call_seq: int = field(default=0, repr=False)
+
+    def _next_seq(self) -> int:
+        self._call_seq += 1
+        return self._call_seq
+
+    def record_list_dir(self, path: str, relative: str, repo_label: str) -> None:
+        self.listed_dirs.append({
+            "seq": self._next_seq(),
+            "path": path,
+            "relative": relative,
+            "repo": repo_label,
+        })
+
+    def record_read_file(self, path: str, relative: str, repo_label: str, max_lines: int) -> None:
+        self.read_files.append({
+            "seq": self._next_seq(),
+            "path": path,
+            "relative": relative,
+            "repo": repo_label,
+            "max_lines": max_lines,
+        })
+
+    def to_dict(self) -> dict:
+        return {
+            "total_list_directory_calls": len(self.listed_dirs),
+            "total_read_file_calls": len(self.read_files),
+            "listed_directories": self.listed_dirs,
+            "read_files": self.read_files,
+        }
 
 TOOL_LIST_DIR = {
     "name": "list_directory",
@@ -52,13 +91,28 @@ TOOL_READ_FILE = {
 ALL_TOOLS = [TOOL_LIST_DIR, TOOL_READ_FILE]
 
 
-def create_tool_handler(allowed_roots: list[str]):
+def create_tool_handler(
+    allowed_roots: list[str],
+    tracker: ExplorationTracker | None = None,
+):
     """Create a tool handler that only allows access within the given root paths."""
     resolved_roots = [str(Path(r).resolve()) for r in allowed_roots]
 
     def _is_allowed(path: str) -> bool:
         resolved = str(Path(path).resolve())
         return any(resolved.startswith(root) for root in resolved_roots)
+
+    def _resolve_repo_label(path: str) -> tuple[str, str]:
+        """Return (repo_label, relative_path) for a given absolute path."""
+        resolved = str(Path(path).resolve())
+        for i, root in enumerate(resolved_roots):
+            if resolved.startswith(root):
+                label = chr(ord("A") + i)
+                rel = os.path.relpath(resolved, root)
+                if rel == ".":
+                    rel = ""
+                return label, rel
+        return "?", path
 
     ignore_caches: dict[str, IgnoreRules] = {}
 
@@ -72,9 +126,20 @@ def create_tool_handler(allowed_roots: list[str]):
 
     async def handler(tool_name: str, tool_input: dict) -> str:
         if tool_name == "list_directory":
-            return _handle_list_dir(tool_input, _is_allowed, _get_ignore_rules)
+            result = _handle_list_dir(tool_input, _is_allowed, _get_ignore_rules)
+            if tracker and not result.startswith("Error"):
+                label, rel = _resolve_repo_label(tool_input.get("path", ""))
+                tracker.record_list_dir(tool_input.get("path", ""), rel, label)
+            return result
         elif tool_name == "read_file":
-            return _handle_read_file(tool_input, _is_allowed)
+            result = _handle_read_file(tool_input, _is_allowed)
+            if tracker and not result.startswith("Error"):
+                label, rel = _resolve_repo_label(tool_input.get("path", ""))
+                tracker.record_read_file(
+                    tool_input.get("path", ""), rel, label,
+                    tool_input.get("max_lines", 50),
+                )
+            return result
         else:
             return f"Unknown tool: {tool_name}"
 

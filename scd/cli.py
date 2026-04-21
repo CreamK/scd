@@ -9,8 +9,6 @@ from rich.console import Console
 
 from scd.config import ScdConfig, load_env_file
 from scd.pipeline.orchestrator import run_pipeline
-from scd.reporter.markdown_template import render_markdown
-from scd.reporter.reporter import save_report
 
 console = Console()
 
@@ -33,7 +31,8 @@ def main() -> None:
 @main.command()
 @click.argument("repo_a", type=click.Path(exists=True))
 @click.argument("repo_b", type=click.Path(exists=True))
-@click.option("-o", "--output", default=None, help="Output file path.")
+@click.option("-o", "--output", default=None, help="Output report file path (overrides --output-dir default).")
+@click.option("--output-dir", default="output", help="Output directory for all artifacts (default: output).")
 @click.option("-f", "--format", "fmt", type=click.Choice(["markdown", "json"]), default="markdown", help="Output format.")
 @click.option("-c", "--concurrency", default=10, type=int, help="Max concurrent AI calls.")
 @click.option("-t", "--threshold", default=5, type=int, help="Minimum similarity score (0-10).")
@@ -47,6 +46,7 @@ def compare(
     repo_a: str,
     repo_b: str,
     output: str | None,
+    output_dir: str,
     fmt: str,
     concurrency: int,
     threshold: int,
@@ -80,12 +80,13 @@ def compare(
         model=model,
         output_format=fmt,
         output_path=output,
+        output_dir=output_dir,
         lang_filter=lang_filter,
         shallow=shallow,
     )
 
     try:
-        report = asyncio.run(run_pipeline(repo_a, repo_b, config))
+        asyncio.run(run_pipeline(repo_a, repo_b, config))
     except KeyboardInterrupt:
         console.print("\n[red]Interrupted.[/]")
         sys.exit(1)
@@ -95,18 +96,6 @@ def compare(
             import traceback
             traceback.print_exc()
         sys.exit(1)
-
-    if output:
-        save_report(report, output, fmt)
-        console.print(f"\nReport saved to [bold]{output}[/]")
-    else:
-        if fmt == "markdown":
-            md = render_markdown(report)
-            console.print(md)
-        else:
-            import json
-            from dataclasses import asdict
-            console.print_json(json.dumps(asdict(report), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import logging
 
 from scd.ai.client import ClaudeClient
 from scd.ai.prompts import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
-from scd.ai.tools import ALL_TOOLS, create_tool_handler
+from scd.ai.tools import ALL_TOOLS, ExplorationTracker, create_tool_handler
 from scd.models import DirMatch, DirMatchResult, RepoScanResult
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,8 @@ async def match_directories(
         len(repo_a.dirs), len(repo_b.dirs),
     )
 
-    tool_handler = create_tool_handler([repo_a.root_path, repo_b.root_path])
+    tracker = ExplorationTracker()
+    tool_handler = create_tool_handler([repo_a.root_path, repo_b.root_path], tracker=tracker)
 
     user_msg = DIRECTORY_MATCH_USER.format(
         repo_a_path=repo_a.root_path,
@@ -55,6 +56,7 @@ async def match_directories(
 
     result.orphan_dirs_a = [d for d in repo_a.dirs if d not in matched_a]
     result.orphan_dirs_b = [d for d in repo_b.dirs if d not in matched_b]
+    result.exploration_log = tracker.to_dict()
 
     logger.info(
         "Directory matching done: %d pairs, %d orphans in A, %d orphans in B",

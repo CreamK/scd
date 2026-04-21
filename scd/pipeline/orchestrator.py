@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
+from pathlib import Path
 
 from rich.console import Console
 
@@ -11,14 +14,36 @@ from scd.models import RepoScanResult, ScdReport
 from scd.pipeline.directory_matcher import match_directories
 from scd.pipeline.function_comparer import compare_matched_dirs, deduplicate_results
 from scd.pipeline.orphan_handler import handle_orphan_dirs
+from scd.reporter.reporter import save_report
 from scd.scanner.repo_scanner import scan_repo
 
 logger = logging.getLogger(__name__)
 console = Console()
 
 
+def _write_exploration_log(output_dir: str, exploration_log: dict) -> str:
+    """Write exploration log to output directory, return the file path."""
+    path = os.path.join(output_dir, "exploration_log.json")
+    Path(path).write_text(
+        json.dumps(exploration_log, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_compared_pairs(output_dir: str, results: list) -> str:
+    """Write all compared file pairs to a text file, one pair per line."""
+    path = os.path.join(output_dir, "compared_pairs.txt")
+    lines = [f"{cr.file_a}->{cr.file_b}" for cr in results]
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) -> ScdReport:
     """Run the full SCD comparison pipeline."""
+    output_dir = config.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
     client = ClaudeClient(config)
 
     # --- Phase 1: Scan ---
@@ -48,6 +73,15 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         report.total_ai_calls = client.total_calls
         console.print(f"  Found {len(dir_result.matched_dirs)} directory pairs")
         console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
+
+        if dir_result.exploration_log:
+            log_path = _write_exploration_log(output_dir, dir_result.exploration_log)
+            console.print(f"  Exploration log saved to [bold]{log_path}[/]")
+
+        report_ext = "json" if config.output_format == "json" else "md"
+        report_path = config.output_path or os.path.join(output_dir, f"report.{report_ext}")
+        save_report(report, report_path, config.output_format)
+        console.print(f"\n[bold green]Done![/] Report saved to [bold]{report_path}[/]")
         return report
 
     # --- Phase 2: Directory matching ---
@@ -63,6 +97,10 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     if dir_result.orphan_dirs_b:
         console.print(f"  [yellow]Orphan dirs in B:[/] {', '.join(dir_result.orphan_dirs_b)}")
     console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
+
+    if dir_result.exploration_log:
+        log_path = _write_exploration_log(output_dir, dir_result.exploration_log)
+        console.print(f"  Exploration log saved to [bold]{log_path}[/]")
 
     # --- Phase 3a: Orphan handling ---
     extra_matches = []
@@ -89,9 +127,17 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print(f"  Found {total_similar} similar function pairs across {len(report.compare_results)} file pairs")
     console.print(f"  Function comparison completed in {time.monotonic() - t3:.1f}s")
 
+    pairs_path = _write_compared_pairs(output_dir, raw_results)
+    console.print(f"  Compared pairs saved to [bold]{pairs_path}[/] ({len(raw_results)} pairs)")
+
     report.total_ai_calls = client.total_calls
+
+    report_ext = "json" if config.output_format == "json" else "md"
+    report_path = config.output_path or os.path.join(output_dir, f"report.{report_ext}")
+    save_report(report, report_path, config.output_format)
 
     total_time = time.monotonic() - t0
     console.print(f"\n[bold green]Done![/] Total time: {total_time:.1f}s, AI calls: {report.total_ai_calls}")
+    console.print(f"  Report saved to [bold]{report_path}[/]")
 
     return report

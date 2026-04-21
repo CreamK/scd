@@ -56,5 +56,6 @@ class ScdConfig:
     model: str = "claude-sonnet-4-20250514"
     output_format: str = "markdown"
     output_path: str | None = None
+    output_dir: str = "output"
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
