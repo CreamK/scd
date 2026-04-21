@@ -1,0 +1,150 @@
+"""Tool definitions and handlers for Claude agent mode."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from scd.config import SOURCE_EXTENSIONS
+from scd.scanner.ignore_rules import IgnoreRules
+
+TOOL_LIST_DIR = {
+    "name": "list_directory",
+    "description": (
+        "List the contents of a directory. Returns subdirectories and source code files. "
+        "Use this to explore repository structure. Start from the repo root and drill down."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to the directory to list.",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+TOOL_READ_FILE = {
+    "name": "read_file",
+    "description": (
+        "Read the first N lines of a source code file. "
+        "Use this to peek at file contents when you need more context to judge similarity."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Absolute path to the file to read.",
+            },
+            "max_lines": {
+                "type": "integer",
+                "description": "Maximum number of lines to read (default 50).",
+                "default": 50,
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+ALL_TOOLS = [TOOL_LIST_DIR, TOOL_READ_FILE]
+
+
+def create_tool_handler(allowed_roots: list[str]):
+    """Create a tool handler that only allows access within the given root paths."""
+    resolved_roots = [str(Path(r).resolve()) for r in allowed_roots]
+
+    def _is_allowed(path: str) -> bool:
+        resolved = str(Path(path).resolve())
+        return any(resolved.startswith(root) for root in resolved_roots)
+
+    ignore_caches: dict[str, IgnoreRules] = {}
+
+    def _get_ignore_rules(path: str) -> IgnoreRules:
+        for root in resolved_roots:
+            if str(Path(path).resolve()).startswith(root):
+                if root not in ignore_caches:
+                    ignore_caches[root] = IgnoreRules(Path(root))
+                return ignore_caches[root]
+        return IgnoreRules(Path(path))
+
+    async def handler(tool_name: str, tool_input: dict) -> str:
+        if tool_name == "list_directory":
+            return _handle_list_dir(tool_input, _is_allowed, _get_ignore_rules)
+        elif tool_name == "read_file":
+            return _handle_read_file(tool_input, _is_allowed)
+        else:
+            return f"Unknown tool: {tool_name}"
+
+    return handler
+
+
+def _handle_list_dir(
+    tool_input: dict,
+    is_allowed: callable,
+    get_ignore_rules: callable,
+) -> str:
+    path = tool_input.get("path", "")
+    if not is_allowed(path):
+        return "Error: Access denied — path is outside allowed repositories."
+
+    p = Path(path)
+    if not p.is_dir():
+        return f"Error: Not a directory: {path}"
+
+    rules = get_ignore_rules(path)
+
+    dirs: list[str] = []
+    files: list[str] = []
+
+    try:
+        for entry in sorted(p.iterdir()):
+            name = entry.name
+            if entry.is_dir():
+                if not rules.should_ignore_dir(name) and not name.startswith("."):
+                    dirs.append(f"  {name}/")
+            elif entry.is_file():
+                ext = entry.suffix.lower()
+                if ext in SOURCE_EXTENSIONS and not rules.should_ignore_file(name):
+                    files.append(f"  {name}")
+    except PermissionError:
+        return f"Error: Permission denied: {path}"
+
+    parts: list[str] = []
+    if dirs:
+        parts.append("Directories:\n" + "\n".join(dirs))
+    if files:
+        parts.append("Files:\n" + "\n".join(files))
+    if not parts:
+        return "Empty directory (no source code files or subdirectories)."
+
+    return "\n".join(parts)
+
+
+def _handle_read_file(tool_input: dict, is_allowed: callable) -> str:
+    path = tool_input.get("path", "")
+    max_lines = tool_input.get("max_lines", 50)
+
+    if not is_allowed(path):
+        return "Error: Access denied — path is outside allowed repositories."
+
+    p = Path(path)
+    if not p.is_file():
+        return f"Error: Not a file: {path}"
+
+    try:
+        content = p.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, UnicodeDecodeError) as e:
+        return f"Error reading file: {e}"
+
+    lines = content.splitlines()
+    total = len(lines)
+    truncated = lines[:max_lines]
+    result = "\n".join(truncated)
+
+    if total > max_lines:
+        result += f"\n\n... ({total - max_lines} more lines, {total} total)"
+
+    return result

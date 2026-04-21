@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scd"
+version = "0.1.0"
+description = "Similar Code Detector - AI-powered code similarity detection between repositories"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.39.0",
+    "click>=8.1.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=24.1.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+scd = "scd.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scd*"]
