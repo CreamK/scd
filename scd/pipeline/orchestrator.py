@@ -12,7 +12,7 @@ from scd.ai.client import ClaudeClient
 from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
 from scd.pipeline.directory_matcher import match_directories
-from scd.pipeline.function_comparer import compare_matched_dirs, deduplicate_results
+from scd.pipeline.function_comparer import build_all_file_pairs, compare_file_pairs, deduplicate_results
 from scd.pipeline.orphan_handler import handle_orphan_dirs
 from scd.reporter.reporter import save_report
 from scd.scanner.repo_scanner import scan_repo
@@ -21,20 +21,25 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-def _write_exploration_log(output_dir: str, exploration_log: dict) -> str:
-    """Write exploration log to output directory, return the file path."""
-    path = os.path.join(output_dir, "exploration_log.json")
-    Path(path).write_text(
+def _write_exploration_log(output_dir: str, exploration_log: dict, exploration_tree: str = "") -> str:
+    """Write exploration log to output directory, return the tree file path."""
+    json_path = os.path.join(output_dir, "exploration_log.json")
+    Path(json_path).write_text(
         json.dumps(exploration_log, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    return path
+
+    tree_path = os.path.join(output_dir, "exploration_log.txt")
+    if exploration_tree:
+        Path(tree_path).write_text(exploration_tree + "\n", encoding="utf-8")
+        return tree_path
+    return json_path
 
 
-def _write_compared_pairs(output_dir: str, results: list) -> str:
-    """Write all compared file pairs to a text file, one pair per line."""
+def _write_compared_pairs(output_dir: str, file_pairs: list[tuple[str, str]]) -> str:
+    """Write all file pairs to compare to a text file, one pair per line."""
     path = os.path.join(output_dir, "compared_pairs.txt")
-    lines = [f"{cr.file_a}->{cr.file_b}" for cr in results]
+    lines = [f"{fa} -> {fb}" for fa, fb in file_pairs]
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -65,8 +70,8 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     )
 
     if config.shallow:
-        # --- Phase 2 only: Directory matching ---
-        console.print("\n[bold blue]Phase 2:[/] Matching directories (shallow mode)...")
+        # --- Phase 2a only: Directory matching (shallow) ---
+        console.print("\n[bold blue]Phase 2a:[/] Matching directories (shallow mode)...")
         t1 = time.monotonic()
         dir_result = await match_directories(repo_a, repo_b, client)
         report.dir_match_result = dir_result
@@ -75,7 +80,7 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
 
         if dir_result.exploration_log:
-            log_path = _write_exploration_log(output_dir, dir_result.exploration_log)
+            log_path = _write_exploration_log(output_dir, dir_result.exploration_log, dir_result.exploration_tree)
             console.print(f"  Exploration log saved to [bold]{log_path}[/]")
 
         report_ext = "json" if config.output_format == "json" else "md"
@@ -84,8 +89,8 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         console.print(f"\n[bold green]Done![/] Report saved to [bold]{report_path}[/]")
         return report
 
-    # --- Phase 2: Directory matching ---
-    console.print("\n[bold blue]Phase 2:[/] Matching directories...")
+    # --- Phase 2a: Directory matching ---
+    console.print("\n[bold blue]Phase 2a:[/] Matching directories...")
     t1 = time.monotonic()
     dir_result = await match_directories(repo_a, repo_b, client)
     report.dir_match_result = dir_result
@@ -99,13 +104,13 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
 
     if dir_result.exploration_log:
-        log_path = _write_exploration_log(output_dir, dir_result.exploration_log)
+        log_path = _write_exploration_log(output_dir, dir_result.exploration_log, dir_result.exploration_tree)
         console.print(f"  Exploration log saved to [bold]{log_path}[/]")
 
-    # --- Phase 3a: Orphan handling ---
+    # --- Phase 2b: Orphan recovery ---
     extra_matches = []
     if dir_result.orphan_dirs_a or dir_result.orphan_dirs_b:
-        console.print("\n[bold blue]Phase 3a:[/] Checking orphan directories...")
+        console.print("\n[bold blue]Phase 2b:[/] Checking orphan directories...")
         t2 = time.monotonic()
         extra_matches = await handle_orphan_dirs(
             dir_result.orphan_dirs_a, dir_result.orphan_dirs_b,
@@ -113,22 +118,25 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         )
         for m in extra_matches:
             console.print(f"  [cyan]↺[/] {m.dir_a} <-> {m.dir_b} (recovered)")
-        console.print(f"  Orphan check completed in {time.monotonic() - t2:.1f}s")
+        console.print(f"  Orphan recovery completed in {time.monotonic() - t2:.1f}s")
 
     all_dir_matches = dir_result.matched_dirs + extra_matches
 
-    # --- Phase 3b: Function comparison ---
-    console.print("\n[bold blue]Phase 3b:[/] Comparing functions...")
+    # Build file pairs and write compared_pairs.txt
+    all_file_pairs = build_all_file_pairs(all_dir_matches, repo_a, repo_b)
+    pairs_path = _write_compared_pairs(output_dir, all_file_pairs)
+    console.print(f"\n  File pairs determined: {len(all_file_pairs)} pairs")
+    console.print(f"  Compared pairs saved to [bold]{pairs_path}[/]")
+
+    # --- Phase 3: Function comparison ---
+    console.print("\n[bold blue]Phase 3:[/] Comparing functions...")
     t3 = time.monotonic()
-    raw_results = await compare_matched_dirs(all_dir_matches, repo_a, repo_b, client, config)
+    raw_results = await compare_file_pairs(all_file_pairs, repo_a, repo_b, client, config)
     report.compare_results = deduplicate_results(raw_results)
 
     total_similar = sum(len(cr.similar_functions) for cr in report.compare_results)
     console.print(f"  Found {total_similar} similar function pairs across {len(report.compare_results)} file pairs")
     console.print(f"  Function comparison completed in {time.monotonic() - t3:.1f}s")
-
-    pairs_path = _write_compared_pairs(output_dir, raw_results)
-    console.print(f"  Compared pairs saved to [bold]{pairs_path}[/] ({len(raw_results)} pairs)")
 
     report.total_ai_calls = client.total_calls
 

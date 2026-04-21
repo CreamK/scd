@@ -47,6 +47,69 @@ class ExplorationTracker:
             "read_files": self.read_files,
         }
 
+    def to_tree_text(self) -> str:
+        """Render exploration history as readable file trees, one per repo."""
+        repo_dirs: dict[str, set[str]] = {}
+        repo_files: dict[str, dict[str, int]] = {}
+
+        for entry in self.listed_dirs:
+            repo = entry["repo"]
+            rel = entry["relative"]
+            repo_dirs.setdefault(repo, set()).add(rel)
+
+        for entry in self.read_files:
+            repo = entry["repo"]
+            rel = entry["relative"]
+            repo_files.setdefault(repo, {})[rel] = entry.get("max_lines", 50)
+
+        lines: list[str] = [
+            f"Exploration Stats: {len(self.listed_dirs)} dir listings, "
+            f"{len(self.read_files)} file reads",
+            "",
+        ]
+
+        for repo in sorted(set(list(repo_dirs.keys()) + list(repo_files.keys()))):
+            lines.append(f"Repo {repo}:")
+            tree = _build_tree(repo_dirs.get(repo, set()), repo_files.get(repo, {}))
+            lines.append(tree)
+            lines.append("")
+
+        return "\n".join(lines).rstrip()
+
+
+def _build_tree(dirs: set[str], files: dict[str, int]) -> str:
+    """Build an ASCII tree from directory paths and read file paths."""
+    tree: dict = {}
+
+    for d in dirs:
+        parts = d.split("/") if d else []
+        node = tree
+        for part in parts:
+            node = node.setdefault(part + "/", {})
+
+    for f, max_lines in files.items():
+        parts = f.split("/")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part + "/", {})
+        node[f"* {parts[-1]} [read:{max_lines}L]"] = None
+
+    return _render_tree(tree, "")
+
+
+def _render_tree(node: dict, prefix: str) -> str:
+    lines: list[str] = []
+    entries = sorted(node.keys(), key=lambda k: (not k.endswith("/"), k.lower()))
+    for i, key in enumerate(entries):
+        is_last = i == len(entries) - 1
+        connector = "└── " if is_last else "├── "
+        lines.append(f"{prefix}{connector}{key}")
+        child = node[key]
+        if child is not None and isinstance(child, dict) and child:
+            extension = "    " if is_last else "│   "
+            lines.append(_render_tree(child, prefix + extension))
+    return "\n".join(lines)
+
 TOOL_LIST_DIR = {
     "name": "list_directory",
     "description": (

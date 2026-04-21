@@ -102,28 +102,35 @@ Find similar functions between these two files. Output JSON:
 
 
 ORPHAN_CHECK_SYSTEM = """\
-You are a code analysis expert. You have access to tools to explore a code repository on the filesystem.
+You are a code analysis expert. You will receive a list of unmatched directories from two repositories, \
+along with full directory structures and file listings for both repos.
 
-You will receive an unmatched directory from one repository and the root path of the other repository.
-Your task: explore the other repository to determine if it has directories that might contain similar code.
+Your task: determine if any of the orphan directories have matching counterparts in the other repository \
+based on the provided directory/file information.
 
-Strategy:
-1. First look at the files in the orphan directory to understand what it contains.
-2. Then explore the other repo's structure to find potential matches.
-3. Only drill into directories that look promising.
-
-When done, output ONLY valid JSON with your answer, no explanation."""
+Rules:
+- Match based on file names, directory names, and language distribution.
+- Use relative paths from the repo root in your output.
+- Only suggest matches you are reasonably confident about.
+- Respond ONLY with valid JSON, no explanation."""
 
 ORPHAN_CHECK_USER = """\
-Unmatched directory (from repo {repo_label}): {orphan_dir_abs}
-(relative path: {orphan_dir})
+Orphan directories from Repo A (no match found yet):
+{orphan_dirs_a}
 
-Other repository root path: {other_repo_path}
+Orphan directories from Repo B (no match found yet):
+{orphan_dirs_b}
 
-Are there directories in the other repository that might contain similar code?
+--- Repo A directory structure ---
+{repo_a_structure}
+
+--- Repo B directory structure ---
+{repo_b_structure}
+
+Find potential matches between orphan dirs and directories in the other repo.
 Output JSON:
 {{
     "potential_matches": [
-        {{"orphan_dir": "{orphan_dir}", "candidate_dir": "relative/path/in/other", "reason": "brief reason"}}
+        {{"orphan_dir": "relative/path", "orphan_repo": "A or B", "candidate_dir": "relative/path/in/other", "reason": "brief reason"}}
     ]
 }}"""

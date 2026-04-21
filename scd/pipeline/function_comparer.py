@@ -114,14 +114,12 @@ async def _compare_file_pair(
         return CompareResult(file_a=file_a, file_b=file_b)
 
 
-async def compare_matched_dirs(
+def build_all_file_pairs(
     matched_dirs: list[DirMatch],
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
-    client: ClaudeClient,
-    config: ScdConfig,
-) -> list[CompareResult]:
-    """Compare all file pairs across all matched directory pairs."""
+) -> list[tuple[str, str]]:
+    """Build all file pairs (n x m) from matched directory pairs."""
     all_pairs: list[tuple[str, str]] = []
     for match in matched_dirs:
         pairs = _build_file_pairs(match, repo_a, repo_b)
@@ -130,12 +128,21 @@ async def compare_matched_dirs(
             "Dir pair %s <-> %s: %d file pairs",
             match.dir_a, match.dir_b, len(pairs),
         )
-
     logger.info("Total file pairs to compare: %d", len(all_pairs))
+    return all_pairs
 
+
+async def compare_file_pairs(
+    file_pairs: list[tuple[str, str]],
+    repo_a: RepoScanResult,
+    repo_b: RepoScanResult,
+    client: ClaudeClient,
+    config: ScdConfig,
+) -> list[CompareResult]:
+    """Compare a pre-built list of file pairs."""
     tasks = [
         _compare_file_pair(fa, fb, repo_a, repo_b, client, config.similarity_threshold)
-        for fa, fb in all_pairs
+        for fa, fb in file_pairs
     ]
     results = await asyncio.gather(*tasks)
 

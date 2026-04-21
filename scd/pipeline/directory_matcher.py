@@ -58,6 +58,7 @@ async def match_directories(
     result.orphan_dirs_a = [d for d in repo_a.dirs if d not in matched_a]
     result.orphan_dirs_b = [d for d in repo_b.dirs if d not in matched_b]
     result.exploration_log = tracker.to_dict()
+    result.exploration_tree = tracker.to_tree_text()
 
     logger.info(
         "Directory matching done: %d pairs, %d orphans in A, %d orphans in B",
