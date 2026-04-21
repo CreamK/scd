@@ -41,7 +41,7 @@ class ClaudeClient:
         self._model = config.model
         self._rate_limiter = RateLimiter(
             max_concurrent=config.concurrency,
-            requests_per_minute=config.concurrency * 6,
+            requests_per_second=2.0,
         )
         self.total_calls = 0
         self._lock = asyncio.Lock()
