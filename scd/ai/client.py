@@ -161,6 +161,10 @@ class ClaudeClient:
     def _extract_json(text: str) -> dict:
         """Extract JSON from response text, handling markdown code blocks."""
         text = text.strip()
+        if not text:
+            logger.warning("Empty response from API, returning empty dict")
+            return {}
+
         if text.startswith("```"):
             lines = text.split("\n")
             start = 1
@@ -171,4 +175,8 @@ class ClaudeClient:
                 end = len(lines)
             text = "\n".join(lines[start:end]).strip()
 
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error("Failed to parse JSON: %s\nResponse text: %s", e, text[:500])
+            raise
