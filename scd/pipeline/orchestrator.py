@@ -85,7 +85,10 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print("\n[bold blue]Phase 2b:[/] Matching directories...")
     t2 = time.monotonic()
 
-    dir_result = await match_directories(repo_a, repo_b, summaries_a, summaries_b, client)
+    dir_result = await match_directories(
+        repo_a, repo_b, summaries_a, summaries_b, client,
+        batch_size=config.match_batch_size,
+    )
     report.dir_match_result = dir_result
 
     for m in dir_result.matched_dirs:

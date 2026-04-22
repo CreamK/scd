@@ -65,10 +65,6 @@ def render_markdown(report: ScdReport) -> str:
         lines.append("## Directory Matches\n")
         for m in dm.matched_dirs:
             lines.append(f"- `{m.dir_a}` ↔ `{m.dir_b}` ({m.confidence}) — {m.reason}")
-        if dm.orphan_dirs_a:
-            lines.append(f"\n**Unmatched in A:** {', '.join(f'`{d}`' for d in dm.orphan_dirs_a)}")
-        if dm.orphan_dirs_b:
-            lines.append(f"\n**Unmatched in B:** {', '.join(f'`{d}`' for d in dm.orphan_dirs_b)}")
         lines.append("")
 
     # --- Detailed Results ---

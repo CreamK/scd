@@ -61,3 +61,4 @@ class ScdConfig:
     output_dir: str = "output"
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
+    match_batch_size: int = 40

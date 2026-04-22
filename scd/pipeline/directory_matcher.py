@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -12,8 +13,9 @@ from scd.ai.prompts import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
 from scd.models import DirMatch, DirMatchResult, RepoScanResult
 
 logger = logging.getLogger(__name__)
-DIRECTORY_MATCH_MAX_TOKENS = 1200
+DIRECTORY_MATCH_MAX_TOKENS = 3072
 HEURISTIC_MIN_SCORE = 0.22
+_CONF_ORDER = {"high": 3, "medium": 2, "low": 1}
 
 
 def _summary_to_text(summary: str) -> str:
@@ -55,7 +57,7 @@ def _heuristic_match(
     summaries_a: dict[str, str],
     summaries_b: dict[str, str],
 ) -> DirMatchResult:
-    """Fallback matching when remote model is unavailable."""
+    """Fallback matching when the model is unavailable."""
     candidates: list[tuple[float, str, str]] = []
     for dir_a, sum_a in summaries_a.items():
         for dir_b, sum_b in summaries_b.items():
@@ -95,42 +97,56 @@ def _format_summaries(summaries: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-async def match_directories(
+def _chunk(summaries: dict[str, str], size: int) -> list[dict[str, str]]:
+    """Split summaries into deterministic chunks of at most `size` entries."""
+    items = sorted(summaries.items())
+    if size <= 0:
+        return [dict(items)] if items else []
+    return [dict(items[i:i + size]) for i in range(0, len(items), size)]
+
+
+def _resolve_one_to_one(matches: list[DirMatch]) -> DirMatchResult:
+    """Collapse cross-batch duplicates into a one-to-one mapping.
+
+    Higher-confidence matches win; ties are resolved first-seen.
+    """
+    matches_sorted = sorted(
+        matches,
+        key=lambda m: _CONF_ORDER.get(m.confidence, 0),
+        reverse=True,
+    )
+    used_a: set[str] = set()
+    used_b: set[str] = set()
+    kept: list[DirMatch] = []
+    for m in matches_sorted:
+        if m.dir_a in used_a or m.dir_b in used_b:
+            continue
+        kept.append(m)
+        used_a.add(m.dir_a)
+        used_b.add(m.dir_b)
+    return DirMatchResult(matched_dirs=kept)
+
+
+async def _match_single_batch(
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
     summaries_a: dict[str, str],
     summaries_b: dict[str, str],
     client: ClaudeClient,
 ) -> DirMatchResult:
-    """Match directories between two repos using their pre-generated summaries."""
-    logger.info(
-        "Matching directories via summaries (%d dirs in A, %d dirs in B)",
-        len(summaries_a), len(summaries_b),
-    )
-
+    """Run one AI call over a pair of summary batches."""
     user_msg = DIRECTORY_MATCH_USER.format(
         repo_a_summaries=_format_summaries(summaries_a),
         repo_b_summaries=_format_summaries(summaries_b),
     )
-    logger.info(
-        "Directory match prompt size: %d chars, max_tokens=%d",
-        len(user_msg),
-        DIRECTORY_MATCH_MAX_TOKENS,
+
+    data = await client.ask_json(
+        system=DIRECTORY_MATCH_SYSTEM,
+        user=user_msg,
+        max_tokens=DIRECTORY_MATCH_MAX_TOKENS,
     )
 
-    try:
-        data = await client.ask_json(
-            system=DIRECTORY_MATCH_SYSTEM,
-            user=user_msg,
-            max_tokens=DIRECTORY_MATCH_MAX_TOKENS,
-        )
-        result = DirMatchResult()
-    except Exception as e:
-        logger.error("Directory matching via model failed, fallback to heuristic: %s", e)
-        result = _heuristic_match(repo_a, repo_b, summaries_a, summaries_b)
-        logger.info("Heuristic directory matching done: %d pairs", len(result.matched_dirs))
-        return result
-
+    result = DirMatchResult()
     for m in data.get("matched_dirs", []):
         dir_a = m.get("dir_a", "")
         dir_b = m.get("dir_b", "")
@@ -143,6 +159,84 @@ async def match_directories(
             ))
         else:
             logger.warning("AI returned invalid dir pair: %s <-> %s", dir_a, dir_b)
+    return result
+
+
+async def _match_in_batches(
+    repo_a: RepoScanResult,
+    repo_b: RepoScanResult,
+    summaries_a: dict[str, str],
+    summaries_b: dict[str, str],
+    client: ClaudeClient,
+    batch_size: int,
+) -> DirMatchResult:
+    """Run p*q concurrent batch calls and merge results into a one-to-one mapping."""
+    a_batches = _chunk(summaries_a, batch_size)
+    b_batches = _chunk(summaries_b, batch_size)
+    total_calls = len(a_batches) * len(b_batches)
+    logger.info(
+        "Matching in batches: %d x %d = %d AI calls (batch_size=%d)",
+        len(a_batches), len(b_batches), total_calls, batch_size,
+    )
+
+    tasks = [
+        _match_single_batch(repo_a, repo_b, a_batch, b_batch, client)
+        for a_batch in a_batches
+        for b_batch in b_batches
+    ]
+    sub_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_matches: list[DirMatch] = []
+    failed = 0
+    for r in sub_results:
+        if isinstance(r, Exception):
+            logger.warning("Sub-batch failed, skipping: %s", r)
+            failed += 1
+            continue
+        all_matches.extend(r.matched_dirs)
+
+    if failed:
+        logger.warning("%d/%d sub-batches failed", failed, total_calls)
+    if failed == total_calls:
+        raise RuntimeError("All directory-match sub-batches failed")
+
+    return _resolve_one_to_one(all_matches)
+
+
+async def match_directories(
+    repo_a: RepoScanResult,
+    repo_b: RepoScanResult,
+    summaries_a: dict[str, str],
+    summaries_b: dict[str, str],
+    client: ClaudeClient,
+    batch_size: int = 40,
+) -> DirMatchResult:
+    """Match directories between two repos using their pre-generated summaries.
+
+    Falls back to heuristic matching if the model-based path raises.
+    """
+    n, m = len(summaries_a), len(summaries_b)
+    logger.info(
+        "Matching directories via summaries (%d dirs in A, %d dirs in B)",
+        n, m,
+    )
+    if n == 0 or m == 0:
+        return DirMatchResult()
+
+    try:
+        if n <= batch_size and m <= batch_size:
+            result = await _match_single_batch(
+                repo_a, repo_b, summaries_a, summaries_b, client,
+            )
+        else:
+            result = await _match_in_batches(
+                repo_a, repo_b, summaries_a, summaries_b, client, batch_size,
+            )
+    except Exception as e:
+        logger.error("Directory matching via model failed, fallback to heuristic: %s", e)
+        result = _heuristic_match(repo_a, repo_b, summaries_a, summaries_b)
+        logger.info("Heuristic directory matching done: %d pairs", len(result.matched_dirs))
+        return result
 
     logger.info("Directory matching done: %d pairs", len(result.matched_dirs))
     return result

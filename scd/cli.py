@@ -41,6 +41,7 @@ def main() -> None:
 @click.option("--base-url", envvar="ANTHROPIC_BASE_URL", default=None, help="Anthropic API base URL (or set ANTHROPIC_BASE_URL env var).")
 @click.option("--lang", default=None, help="Comma-separated language filter (e.g. py,ts).")
 @click.option("--shallow", is_flag=True, help="Only do directory-level matching (no function comparison).")
+@click.option("--match-batch-size", default=40, type=int, help="Max directories per side per Phase 2b AI call (default 40).")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 def compare(
     repo_a: str,
@@ -55,6 +56,7 @@ def compare(
     base_url: str | None,
     lang: str | None,
     shallow: bool,
+    match_batch_size: int,
     verbose: bool,
 ) -> None:
     """Compare two repositories for code similarity."""
@@ -69,6 +71,8 @@ def compare(
         model = env["ANTHROPIC_MODEL"]
     if concurrency == 10 and env.get("CONCURRENCY"):
         concurrency = int(env["CONCURRENCY"])
+    if match_batch_size == 40 and env.get("MATCH_BATCH_SIZE"):
+        match_batch_size = int(env["MATCH_BATCH_SIZE"])
 
     lang_filter = set()
     if lang:
@@ -85,6 +89,7 @@ def compare(
         output_dir=output_dir,
         lang_filter=lang_filter,
         shallow=shallow,
+        match_batch_size=match_batch_size,
     )
 
     try:
