@@ -18,6 +18,14 @@ HEURISTIC_MIN_SCORE = 0.22
 _CONF_ORDER = {"high": 3, "medium": 2, "low": 1}
 
 
+def _normalize_ai_dir_path(raw: str) -> str:
+    """Map model output to `repo.dirs` keys. Root is stored as \"\"; the prompt shows [(root)]."""
+    s = (raw or "").strip()
+    if s == "(root)":
+        return ""
+    return s
+
+
 def _summary_to_text(summary: str) -> str:
     """Convert JSON summary into plain text for heuristic matching."""
     try:
@@ -148,8 +156,8 @@ async def _match_single_batch(
 
     result = DirMatchResult()
     for m in data.get("matched_dirs", []):
-        dir_a = m.get("dir_a", "")
-        dir_b = m.get("dir_b", "")
+        dir_a = _normalize_ai_dir_path(m.get("dir_a", ""))
+        dir_b = _normalize_ai_dir_path(m.get("dir_b", ""))
         if dir_a in repo_a.dirs and dir_b in repo_b.dirs:
             result.matched_dirs.append(DirMatch(
                 dir_a=dir_a,
