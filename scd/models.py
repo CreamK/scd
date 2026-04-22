@@ -60,10 +60,6 @@ class DirMatch:
 @dataclass
 class DirMatchResult:
     matched_dirs: list[DirMatch] = field(default_factory=list)
-    orphan_dirs_a: list[str] = field(default_factory=list)
-    orphan_dirs_b: list[str] = field(default_factory=list)
-    exploration_log: dict = field(default_factory=dict)
-    exploration_tree: str = ""
 
 
 class SimilarityLevel(str, Enum):

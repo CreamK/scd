@@ -7,15 +7,17 @@ import re
 from typing import Any, Callable, Coroutine
 
 import anthropic
+import httpx
 
 from scd.ai.rate_limiter import RateLimiter
 from scd.config import ScdConfig
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 JSON_PARSE_RETRIES = 2
-INITIAL_BACKOFF = 2.0
+INITIAL_BACKOFF = 3.0
+API_TIMEOUT_SECONDS = 180.0
 
 ToolHandler = Callable[[str, dict], Coroutine[Any, Any, str]]
 
@@ -37,12 +39,20 @@ class ClaudeClient:
             kwargs["api_key"] = config.api_key
         if config.base_url:
             kwargs["base_url"] = config.base_url
+        kwargs["max_retries"] = 0
+        kwargs["timeout"] = httpx.Timeout(
+            connect=API_TIMEOUT_SECONDS,
+            read=API_TIMEOUT_SECONDS,
+            write=API_TIMEOUT_SECONDS,
+            pool=API_TIMEOUT_SECONDS,
+        )
         self._client = anthropic.AsyncAnthropic(**kwargs)
         self._model = config.model
         self._rate_limiter = RateLimiter(
             max_concurrent=config.concurrency,
-            requests_per_second=2.0,
+            requests_per_second=config.concurrency,
         )
+        logger.info("Rate limiter: max_concurrent=%d, rps=%.1f", config.concurrency, config.concurrency)
         self.total_calls = 0
         self._lock = asyncio.Lock()
 
@@ -177,6 +187,12 @@ class ClaudeClient:
             except anthropic.RateLimitError:
                 backoff = INITIAL_BACKOFF * (2 ** attempt)
                 logger.warning("Rate limited, retrying in %.1fs (attempt %d/%d)", backoff, attempt + 1, MAX_RETRIES)
+                await asyncio.sleep(backoff)
+            except anthropic.APIConnectionError as e:
+                last_error = e
+                backoff = INITIAL_BACKOFF * (2 ** attempt)
+                cause = repr(e.__cause__) if e.__cause__ else str(e)
+                logger.warning("Connection error: %s, retrying in %.1fs (attempt %d/%d)", cause, backoff, attempt + 1, MAX_RETRIES)
                 await asyncio.sleep(backoff)
             except anthropic.APIError as e:
                 last_error = e

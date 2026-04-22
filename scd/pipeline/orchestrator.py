@@ -11,9 +11,9 @@ from rich.console import Console
 from scd.ai.client import ClaudeClient
 from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
+from scd.pipeline.dir_summarizer import summarize_repo
 from scd.pipeline.directory_matcher import match_directories
 from scd.pipeline.function_comparer import build_all_file_pairs, compare_file_pairs, deduplicate_results
-from scd.pipeline.orphan_handler import handle_orphan_dirs
 from scd.reporter.reporter import save_report
 from scd.scanner.repo_scanner import scan_repo
 
@@ -21,19 +21,15 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
-def _write_exploration_log(output_dir: str, exploration_log: dict, exploration_tree: str = "") -> str:
-    """Write exploration log to output directory, return the tree file path."""
-    json_path = os.path.join(output_dir, "exploration_log.json")
-    Path(json_path).write_text(
-        json.dumps(exploration_log, indent=2, ensure_ascii=False),
+def _write_summaries(output_dir: str, summaries_a: dict[str, str], summaries_b: dict[str, str]) -> str:
+    """Write directory summaries to output directory for inspection."""
+    path = os.path.join(output_dir, "dir_summaries.json")
+    data = {"repo_a": summaries_a, "repo_b": summaries_b}
+    Path(path).write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-
-    tree_path = os.path.join(output_dir, "exploration_log.txt")
-    if exploration_tree:
-        Path(tree_path).write_text(exploration_tree + "\n", encoding="utf-8")
-        return tree_path
-    return json_path
+    return path
 
 
 def _write_compared_pairs(output_dir: str, file_pairs: list[tuple[str, str]]) -> str:
@@ -69,61 +65,42 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         repo_b_files=repo_b.total_files,
     )
 
+    # --- Phase 2a: Generate directory summaries ---
+    console.print("\n[bold blue]Phase 2a:[/] Generating directory summaries...")
+    t1 = time.monotonic()
+
+    summaries_a = await summarize_repo(repo_a, client, config.model)
+    console.print(f"  Repo A: {len(summaries_a)} directory summaries")
+
+    summaries_b = await summarize_repo(repo_b, client, config.model)
+    console.print(f"  Repo B: {len(summaries_b)} directory summaries")
+
+    console.print(f"  Summaries completed in {time.monotonic() - t1:.1f}s")
+
+    summaries_path = _write_summaries(output_dir, summaries_a, summaries_b)
+    console.print(f"  Summaries saved to [bold]{summaries_path}[/]")
+
+    # --- Phase 2b: Match directories ---
+    console.print("\n[bold blue]Phase 2b:[/] Matching directories...")
+    t2 = time.monotonic()
+
+    dir_result = await match_directories(repo_a, repo_b, summaries_a, summaries_b, client)
+    report.dir_match_result = dir_result
+
+    for m in dir_result.matched_dirs:
+        console.print(f"  [green]\u2713[/] {m.dir_a} <-> {m.dir_b} ({m.confidence})")
+    console.print(f"  Matched {len(dir_result.matched_dirs)} directory pairs in {time.monotonic() - t2:.1f}s")
+
     if config.shallow:
-        # --- Phase 2a only: Directory matching (shallow) ---
-        console.print("\n[bold blue]Phase 2a:[/] Matching directories (shallow mode)...")
-        t1 = time.monotonic()
-        dir_result = await match_directories(repo_a, repo_b, client)
-        report.dir_match_result = dir_result
         report.total_ai_calls = client.total_calls
-        console.print(f"  Found {len(dir_result.matched_dirs)} directory pairs")
-        console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
-
-        if dir_result.exploration_log:
-            log_path = _write_exploration_log(output_dir, dir_result.exploration_log, dir_result.exploration_tree)
-            console.print(f"  Exploration log saved to [bold]{log_path}[/]")
-
         report_ext = "json" if config.output_format == "json" else "md"
         report_path = config.output_path or os.path.join(output_dir, f"report.{report_ext}")
         save_report(report, report_path, config.output_format)
         console.print(f"\n[bold green]Done![/] Report saved to [bold]{report_path}[/]")
         return report
 
-    # --- Phase 2a: Directory matching ---
-    console.print("\n[bold blue]Phase 2a:[/] Matching directories...")
-    t1 = time.monotonic()
-    dir_result = await match_directories(repo_a, repo_b, client)
-    report.dir_match_result = dir_result
-
-    for m in dir_result.matched_dirs:
-        console.print(f"  [green]✓[/] {m.dir_a} <-> {m.dir_b} ({m.confidence})")
-    if dir_result.orphan_dirs_a:
-        console.print(f"  [yellow]Orphan dirs in A:[/] {', '.join(dir_result.orphan_dirs_a)}")
-    if dir_result.orphan_dirs_b:
-        console.print(f"  [yellow]Orphan dirs in B:[/] {', '.join(dir_result.orphan_dirs_b)}")
-    console.print(f"  Directory matching completed in {time.monotonic() - t1:.1f}s")
-
-    if dir_result.exploration_log:
-        log_path = _write_exploration_log(output_dir, dir_result.exploration_log, dir_result.exploration_tree)
-        console.print(f"  Exploration log saved to [bold]{log_path}[/]")
-
-    # --- Phase 2b: Orphan recovery ---
-    extra_matches = []
-    if dir_result.orphan_dirs_a or dir_result.orphan_dirs_b:
-        console.print("\n[bold blue]Phase 2b:[/] Checking orphan directories...")
-        t2 = time.monotonic()
-        extra_matches = await handle_orphan_dirs(
-            dir_result.orphan_dirs_a, dir_result.orphan_dirs_b,
-            repo_a, repo_b, client,
-        )
-        for m in extra_matches:
-            console.print(f"  [cyan]↺[/] {m.dir_a} <-> {m.dir_b} (recovered)")
-        console.print(f"  Orphan recovery completed in {time.monotonic() - t2:.1f}s")
-
-    all_dir_matches = dir_result.matched_dirs + extra_matches
-
     # Build file pairs and write compared_pairs.txt
-    all_file_pairs = build_all_file_pairs(all_dir_matches, repo_a, repo_b)
+    all_file_pairs = build_all_file_pairs(dir_result.matched_dirs, repo_a, repo_b)
     pairs_path = _write_compared_pairs(output_dir, all_file_pairs)
     console.print(f"\n  File pairs determined: {len(all_file_pairs)} pairs")
     console.print(f"  Compared pairs saved to [bold]{pairs_path}[/]")

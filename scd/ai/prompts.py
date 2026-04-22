@@ -1,39 +1,90 @@
 """All prompt templates for AI calls."""
 
+# --- Directory Summary (leaf directories) ---
+
+DIR_SUMMARY_LEAF_SYSTEM = """\
+You are a code analysis expert. You will receive all source files from a single directory. \
+Analyze the code and produce a structured summary.
+
+Respond ONLY with valid JSON, no explanation."""
+
+DIR_SUMMARY_LEAF_USER = """\
+Directory: {dir_path}
+Files ({file_count}):
+
+{file_contents}
+
+Produce a JSON summary of this directory:
+{{
+    "purpose": "one-sentence description of what this directory does",
+    "key_exports": ["main functions, classes, or modules exported"],
+    "frameworks": ["libraries or frameworks used"],
+    "patterns": ["design patterns or architectural patterns observed"]
+}}"""
+
+# --- Directory Summary (parent directories with child summaries) ---
+
+DIR_SUMMARY_PARENT_SYSTEM = """\
+You are a code analysis expert. You will receive:
+1. Summaries of child subdirectories (already analyzed)
+2. Source files that belong directly to this directory (not in subdirectories)
+
+Synthesize a higher-level summary that captures the overall purpose of this directory, \
+incorporating what its children do and what its own files do.
+
+Respond ONLY with valid JSON, no explanation."""
+
+DIR_SUMMARY_PARENT_USER = """\
+Directory: {dir_path}
+
+Child directory summaries:
+{child_summaries}
+
+Direct files in this directory ({file_count}):
+{file_contents}
+
+Produce a JSON summary of this directory (incorporating child summaries):
+{{
+    "purpose": "one-sentence description of what this directory does as a whole",
+    "key_exports": ["main functions, classes, or modules exported"],
+    "frameworks": ["libraries or frameworks used across this directory tree"],
+    "patterns": ["design patterns or architectural patterns observed"],
+    "children_overview": "brief summary of how child directories relate to each other"
+}}"""
+
+# --- Directory Matching (based on summaries) ---
+
 DIRECTORY_MATCH_SYSTEM = """\
-You are a code analysis expert. You have access to tools to explore two code repositories on the filesystem.
+You are a code analysis expert. You will receive directory summaries from two repositories. \
+Each summary describes a directory's purpose, exports, frameworks, and patterns.
 
-Your task: thoroughly explore both repositories, then identify directories in repo A that likely correspond to directories in repo B (same purpose or similar functionality).
-
-Strategy:
-1. Start with repo A's root using list_directory, then RECURSIVELY explore EVERY subdirectory you find. Do not skip any directory — drill all the way down until there are no more subdirectories.
-2. For each directory that contains source files, use read_file on 1-2 representative files (first 30-50 lines) to understand the actual code purpose and functionality.
-3. Once repo A is fully explored, do the same for repo B: recursively list ALL directories, and read_file on representative source files in each.
-4. Self-check before answering: review if there are any directories you discovered but did not explore further. If yes, go back and explore them now.
-5. Now match directories based on BOTH directory structure AND actual code content understanding.
+Your task: match directories from Repo A to directories from Repo B that serve the same \
+purpose or contain similar functionality.
 
 Rules:
-- A directory in repo A can match at most one directory in repo B, and vice versa.
-- Be thorough: consider synonyms (auth/authentication, utils/helpers, lib/pkg, etc.)
-- Use relative paths from the repo root in your output (e.g. "src/auth" not the full absolute path).
-- Use "" (empty string) for root-level directory if it contains source files directly.
-- Do NOT output your result until you have explored every directory in both repos.
+- A directory in Repo A can match at most one directory in Repo B, and vice versa.
+- Match at the most specific level possible (prefer leaf-to-leaf matches over root-to-root).
+- Consider synonyms: auth/authentication, utils/helpers, lib/pkg, etc.
+- Only report matches you are confident about.
+- Use relative paths from the repo root (use "" for root directory).
 
-When you are done exploring, output ONLY valid JSON with your final answer, no explanation."""
+Respond ONLY with valid JSON, no explanation."""
 
 DIRECTORY_MATCH_USER = """\
-Repository A root path: {repo_a_path}
-Repository B root path: {repo_b_path}
+--- Repo A directory summaries ---
+{repo_a_summaries}
 
-Please explore both repositories and identify matching directory pairs.
+--- Repo B directory summaries ---
+{repo_b_summaries}
 
-Output JSON:
+Match directories between the two repos. Output JSON:
 {{
     "matched_dirs": [
         {{"dir_a": "relative/path/in/a", "dir_b": "relative/path/in/b", "confidence": "high|medium|low", "reason": "brief reason"}}
     ]
 }}"""
 
+# --- Function Comparison ---
 
 FUNCTION_COMPARE_SYSTEM = """\
 You are a code similarity analysis expert. You will receive two source code files. Your task is to:
@@ -97,40 +148,5 @@ Find similar functions between these two files. Output JSON:
             "similarity_level": "high",
             "analysis": "Brief explanation of similarity across dimensions"
         }}
-    ]
-}}"""
-
-
-ORPHAN_CHECK_SYSTEM = """\
-You are a code analysis expert. You will receive a list of unmatched directories from two repositories, \
-along with full directory structures and file listings for both repos.
-
-Your task: determine if any of the orphan directories have matching counterparts in the other repository \
-based on the provided directory/file information.
-
-Rules:
-- Match based on file names, directory names, and language distribution.
-- Use relative paths from the repo root in your output.
-- Only suggest matches you are reasonably confident about.
-- Respond ONLY with valid JSON, no explanation."""
-
-ORPHAN_CHECK_USER = """\
-Orphan directories from Repo A (no match found yet):
-{orphan_dirs_a}
-
-Orphan directories from Repo B (no match found yet):
-{orphan_dirs_b}
-
---- Repo A directory structure ---
-{repo_a_structure}
-
---- Repo B directory structure ---
-{repo_b_structure}
-
-Find potential matches between orphan dirs and directories in the other repo.
-Output JSON:
-{{
-    "potential_matches": [
-        {{"orphan_dir": "relative/path", "orphan_repo": "A or B", "candidate_dir": "relative/path/in/other", "reason": "brief reason"}}
     ]
 }}"""

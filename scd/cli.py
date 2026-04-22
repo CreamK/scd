@@ -67,6 +67,8 @@ def compare(
         base_url = env.get("ANTHROPIC_BASE_URL")
     if model == "claude-sonnet-4-20250514" and env.get("ANTHROPIC_MODEL"):
         model = env["ANTHROPIC_MODEL"]
+    if concurrency == 10 and env.get("CONCURRENCY"):
+        concurrency = int(env["CONCURRENCY"])
 
     lang_filter = set()
     if lang:
