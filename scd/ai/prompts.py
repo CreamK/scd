@@ -62,11 +62,12 @@ Your task: match directories from Repo A to directories from Repo B that serve t
 purpose or contain similar functionality.
 
 Rules:
+- `dir_a` MUST be one of the labels inside `[...]` under the Repo A section; `dir_b` MUST be one of the labels inside `[...]` under the Repo B section. Never invent, extend, or append to these labels (do not append file names, extensions, module names, or sub-paths; do not concatenate parent + child).
+- Copy the label verbatim. If the label is `(root)`, output `""` (empty string) for that path.
 - A directory in Repo A can match at most one directory in Repo B, and vice versa.
-- Match at the most specific level possible (prefer leaf-to-leaf matches over root-to-root).
+- Match at the most specific level possible (prefer leaf-to-leaf matches over root-to-root), but still only among the labels provided.
 - Consider synonyms: auth/authentication, utils/helpers, lib/pkg, etc.
 - Only report matches you are confident about.
-- Use relative paths from the repo root (use "" for root directory).
 
 Respond ONLY with valid JSON, no explanation."""
 
