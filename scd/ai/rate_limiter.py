@@ -17,7 +17,6 @@ class RateLimiter:
         await self._semaphore.acquire()
         async with self._lock:
             now = time.monotonic()
-            window = 1.0 / self._rps if self._rps > 0 else 0
             self._timestamps = [t for t in self._timestamps if now - t < 1.0]
 
             if len(self._timestamps) >= self._rps:
@@ -37,5 +36,5 @@ class RateLimiter:
         await self.acquire()
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         self.release()

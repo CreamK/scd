@@ -71,7 +71,7 @@ def scan_repo(repo_path: str, config: ScdConfig) -> RepoScanResult:
         if rel_dir == ".":
             rel_dir = ""
 
-        dir_info = DirInfo(path=rel_dir, subdirs=[])
+        dir_info = DirInfo(path=rel_dir)
         has_source = False
 
         for fname in sorted(filenames):
@@ -97,14 +97,12 @@ def scan_repo(repo_path: str, config: ScdConfig) -> RepoScanResult:
                 path=rel_file,
                 language=_detect_language(fname),
                 line_count=line_count,
-                size_bytes=os.path.getsize(full_path),
             )
             dir_info.files.append(file_info)
             result.file_contents[rel_file] = content
             has_source = True
 
         if has_source:
-            dir_info.subdirs = sorted(dirnames)
             result.dirs[rel_dir] = dir_info
 
     return result

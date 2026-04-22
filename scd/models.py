@@ -9,25 +9,12 @@ class FileInfo:
     path: str  # relative to repo root
     language: str
     line_count: int
-    size_bytes: int
 
 
 @dataclass
 class DirInfo:
     path: str  # relative to repo root
     files: list[FileInfo] = field(default_factory=list)
-    subdirs: list[str] = field(default_factory=list)
-
-    @property
-    def file_count(self) -> int:
-        return len(self.files)
-
-    @property
-    def lang_distribution(self) -> dict[str, int]:
-        dist: dict[str, int] = {}
-        for f in self.files:
-            dist[f.language] = dist.get(f.language, 0) + 1
-        return dist
 
 
 @dataclass
@@ -39,14 +26,6 @@ class RepoScanResult:
     @property
     def total_files(self) -> int:
         return len(self.file_contents)
-
-    def file_paths_text(self) -> str:
-        """Generate a simple list of all file paths for AI consumption."""
-        return "\n".join(sorted(self.file_contents.keys()))
-
-    def dir_paths_text(self) -> str:
-        """Generate a simple list of directory paths for AI consumption."""
-        return "\n".join(sorted(self.dirs.keys()))
 
 
 @dataclass

@@ -167,7 +167,7 @@ async def summarize_repo(
     cache_hits = 0
     generated = 0
 
-    for level_idx, level_dirs in enumerate(levels):
+    for level_dirs in levels:
         tasks: list[tuple[str, asyncio.Task | None]] = []
 
         for dir_path in level_dirs:

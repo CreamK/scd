@@ -137,9 +137,6 @@ class PairCache:
     def get(self, key: str) -> CompareResult | None:
         return self._store.get(key)
 
-    def has(self, key: str) -> bool:
-        return key in self._store
-
     async def put(self, key: str, result: CompareResult) -> None:
         """Append a completed result to the cache (idempotent)."""
         async with self._lock:
@@ -151,12 +148,6 @@ class PairCache:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 f.flush()
 
-    def size(self) -> int:
-        return len(self._store)
-
     @property
     def path(self) -> Path:
         return self._path
-
-    def all_results(self) -> list[CompareResult]:
-        return list(self._store.values())
