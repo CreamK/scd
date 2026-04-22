@@ -16,6 +16,7 @@ from scd.models import (
     SimilarFunction,
     SimilarityLevel,
 )
+from scd.pipeline.compare_cache import PairCache, compute_pair_key
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +92,27 @@ async def _compare_file_pair(
     repo_b: RepoScanResult,
     client: ClaudeClient,
     threshold: int,
+    model: str,
+    cache: PairCache | None = None,
+    progress: dict | None = None,
 ) -> CompareResult:
-    """Compare two files using Claude AI."""
+    """Compare two files using Claude AI, with optional checkpoint cache."""
     code_a = repo_a.file_contents.get(file_a, "")
     code_b = repo_b.file_contents.get(file_b, "")
 
     if not code_a or not code_b:
+        if progress is not None:
+            progress["skipped"] = progress.get("skipped", 0) + 1
         return CompareResult(file_a=file_a, file_b=file_b)
+
+    cache_key: str | None = None
+    if cache is not None:
+        cache_key = compute_pair_key(file_a, code_a, file_b, code_b, model, threshold)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            if progress is not None:
+                progress["cached"] = progress.get("cached", 0) + 1
+            return cached
 
     system = FUNCTION_COMPARE_SYSTEM.format(threshold=threshold)
     user = FUNCTION_COMPARE_USER.format(
@@ -108,9 +123,27 @@ async def _compare_file_pair(
     try:
         data = await client.ask_json(system, user)
         similar = _parse_similar_functions(data, file_a, file_b)
-        return CompareResult(file_a=file_a, file_b=file_b, similar_functions=similar)
+        result = CompareResult(file_a=file_a, file_b=file_b, similar_functions=similar)
+        if cache is not None and cache_key is not None:
+            await cache.put(cache_key, result)
+        if progress is not None:
+            progress["completed"] = progress.get("completed", 0) + 1
+            done = progress["completed"] + progress.get("cached", 0) + progress.get("skipped", 0)
+            total = progress.get("total", 0)
+            interval = progress.get("log_every", 25)
+            if total and (progress["completed"] % interval == 0 or done == total):
+                logger.info(
+                    "Phase 3 progress: %d/%d done (cached=%d, new=%d, skipped=%d)",
+                    done, total,
+                    progress.get("cached", 0),
+                    progress["completed"],
+                    progress.get("skipped", 0),
+                )
+        return result
     except Exception as e:
         logger.error("Error comparing %s <-> %s: %s", file_a, file_b, e)
+        if progress is not None:
+            progress["errors"] = progress.get("errors", 0) + 1
         return CompareResult(file_a=file_a, file_b=file_b)
 
 
@@ -138,18 +171,35 @@ async def compare_file_pairs(
     repo_b: RepoScanResult,
     client: ClaudeClient,
     config: ScdConfig,
+    cache: PairCache | None = None,
 ) -> list[CompareResult]:
-    """Compare a pre-built list of file pairs."""
+    """Compare a pre-built list of file pairs, reusing cached results when available."""
+    progress: dict = {
+        "total": len(file_pairs),
+        "cached": 0,
+        "completed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "log_every": 25,
+    }
+
     tasks = [
-        _compare_file_pair(fa, fb, repo_a, repo_b, client, config.similarity_threshold)
+        _compare_file_pair(
+            fa, fb, repo_a, repo_b, client,
+            config.similarity_threshold, config.model,
+            cache=cache, progress=progress,
+        )
         for fa, fb in file_pairs
     ]
     results = await asyncio.gather(*tasks)
 
     non_empty = [r for r in results if r.similar_functions]
     logger.info(
-        "Comparison done: %d pairs had similar functions out of %d total",
+        "Comparison done: %d pairs had similar functions out of %d total "
+        "(cached=%d, new=%d, skipped=%d, errors=%d)",
         len(non_empty), len(results),
+        progress["cached"], progress["completed"],
+        progress["skipped"], progress["errors"],
     )
     return list(results)
 

@@ -11,6 +11,7 @@ from rich.console import Console
 from scd.ai.client import ClaudeClient
 from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
+from scd.pipeline.compare_cache import PairCache
 from scd.pipeline.dir_summarizer import summarize_repo
 from scd.pipeline.directory_matcher import match_directories
 from scd.pipeline.function_comparer import build_all_file_pairs, compare_file_pairs, deduplicate_results
@@ -108,7 +109,20 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     # --- Phase 3: Function comparison ---
     console.print("\n[bold blue]Phase 3:[/] Comparing functions...")
     t3 = time.monotonic()
-    raw_results = await compare_file_pairs(all_file_pairs, repo_a, repo_b, client, config)
+
+    pair_cache = PairCache(output_dir)
+    resumed = pair_cache.load()
+    if resumed:
+        console.print(
+            f"  Resuming from checkpoint: {resumed} pair result(s) loaded from "
+            f"[bold]{pair_cache.path}[/]"
+        )
+    else:
+        console.print(f"  Checkpoint: [bold]{pair_cache.path}[/] (new)")
+
+    raw_results = await compare_file_pairs(
+        all_file_pairs, repo_a, repo_b, client, config, cache=pair_cache,
+    )
     report.compare_results = deduplicate_results(raw_results)
 
     total_similar = sum(len(cr.similar_functions) for cr in report.compare_results)
