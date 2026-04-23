@@ -11,10 +11,19 @@ from rich.console import Console
 from scd.ai.client import ClaudeClient
 from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
-from scd.pipeline.compare_cache import PairCache
 from scd.pipeline.dir_summarizer import summarize_repo
-from scd.pipeline.directory_matcher import match_directories
-from scd.pipeline.function_comparer import build_all_file_pairs, compare_file_pairs, deduplicate_results
+from scd.pipeline.directory_matcher import (
+    compute_match_key,
+    load_match_cache,
+    match_directories,
+    save_match_cache,
+)
+from scd.pipeline.function_comparer import (
+    PairCache,
+    build_all_file_pairs,
+    compare_file_pairs,
+    deduplicate_results,
+)
 from scd.reporter.reporter import save_report
 from scd.scanner.repo_scanner import scan_repo
 
@@ -85,10 +94,22 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print("\n[bold blue]Phase 2b:[/] Matching directories...")
     t2 = time.monotonic()
 
-    dir_result = await match_directories(
-        repo_a, repo_b, summaries_a, summaries_b, client,
-        batch_size=config.match_batch_size,
+    match_key = compute_match_key(
+        summaries_a, summaries_b, config.model, config.match_batch_size,
     )
+    cached_match = load_match_cache(output_dir, match_key)
+    if cached_match is not None:
+        dir_result = cached_match
+        console.print(
+            f"  Loaded cached match ({len(dir_result.matched_dirs)} pairs)"
+        )
+    else:
+        dir_result = await match_directories(
+            repo_a, repo_b, summaries_a, summaries_b, client,
+            batch_size=config.match_batch_size,
+        )
+        cache_path = save_match_cache(output_dir, match_key, dir_result)
+        console.print(f"  Match cached to [bold]{cache_path}[/]")
     report.dir_match_result = dir_result
 
     for m in dir_result.matched_dirs:

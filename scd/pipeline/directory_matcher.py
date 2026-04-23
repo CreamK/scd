@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+from dataclasses import asdict
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from scd.ai.client import ClaudeClient
 from scd.ai.prompts import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
@@ -16,6 +19,75 @@ logger = logging.getLogger(__name__)
 DIRECTORY_MATCH_MAX_TOKENS = 3072
 HEURISTIC_MIN_SCORE = 0.22
 _CONF_ORDER = {"high": 3, "medium": 2, "low": 1}
+
+MATCH_CACHE_DIR_NAME = ".scd_cache"
+MATCH_CACHE_FILE_NAME = "dir_match.json"
+MATCH_CACHE_VERSION = 1
+
+
+def _match_cache_path(output_dir: str) -> Path:
+    return Path(output_dir) / MATCH_CACHE_DIR_NAME / MATCH_CACHE_FILE_NAME
+
+
+def compute_match_key(
+    summaries_a: dict[str, str],
+    summaries_b: dict[str, str],
+    model: str,
+    batch_size: int,
+) -> str:
+    """Stable key over sorted summaries + model + batch_size."""
+    h = hashlib.sha256()
+    h.update(f"v{MATCH_CACHE_VERSION}".encode())
+    h.update(b"\0")
+    h.update(model.encode())
+    h.update(b"\0")
+    h.update(str(batch_size).encode())
+    for label, summaries in (("A", summaries_a), ("B", summaries_b)):
+        h.update(b"\0")
+        h.update(label.encode())
+        for dir_path in sorted(summaries.keys()):
+            h.update(b"\0")
+            h.update(dir_path.encode())
+            h.update(b"\0")
+            h.update(summaries[dir_path].encode())
+    return h.hexdigest()[:16]
+
+
+def load_match_cache(output_dir: str, key: str) -> DirMatchResult | None:
+    """Return cached DirMatchResult if the stored key matches, else None."""
+    path = _match_cache_path(output_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read dir-match cache at %s: %s", path, e)
+        return None
+    if data.get("v") != MATCH_CACHE_VERSION or data.get("key") != key:
+        return None
+    try:
+        return DirMatchResult(
+            matched_dirs=[DirMatch(**m) for m in data.get("matched_dirs", [])]
+        )
+    except (TypeError, KeyError) as e:
+        logger.warning("Malformed dir-match cache at %s: %s", path, e)
+        return None
+
+
+def save_match_cache(output_dir: str, key: str, result: DirMatchResult) -> Path:
+    """Overwrite the dir-match cache file with the latest result."""
+    path = _match_cache_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "v": MATCH_CACHE_VERSION,
+        "key": key,
+        "matched_dirs": [asdict(m) for m in result.matched_dirs],
+    }
+    path.write_text(
+        json.dumps(record, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _normalize_ai_dir_path(raw: str) -> str:
