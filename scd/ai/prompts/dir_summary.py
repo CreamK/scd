@@ -1,51 +1,40 @@
-# --- Directory Summary (leaf directories) ---
+# --- Directory Summary (tool-driven) ---
 
-DIR_SUMMARY_LEAF_SYSTEM = """\
-You are a code analysis expert. You will receive all source files from a single directory. \
-Analyze the code and produce a structured summary.
+DIR_SUMMARY_SYSTEM = """\
+You are a code analysis expert. You will analyze a single directory subtree of a source repository and produce a structured JSON summary.
 
-Respond ONLY with valid JSON, no explanation."""
+You have two tools available, scoped to the current subtree only:
+- list_dir(path): list immediate subdirectories and files under a directory.
+- read_file(path, offset?, limit?): read a source file. Use offset to paginate if 'truncated' is true.
 
-DIR_SUMMARY_LEAF_USER = """\
-Directory: {dir_path}
-Files ({file_count}):
+Workflow:
+1. Start from the inventory given in the user message (already contains list_dir(".") results and a subtree file/line total).
+2. Decide which files are representative (entry points, index files, largest modules, public APIs).
+3. Call read_file to inspect them. You MUST achieve at least 70% file coverage across the entire subtree (reading a file counts once, regardless of pagination). Small subtrees (<=3 files) must be read completely.
+4. Once you have enough evidence, output ONLY the final JSON object. No prose, no markdown fences.
 
-{file_contents}
+Output JSON schema:
+{
+  "purpose": "one-sentence description of what this directory does as a whole",
+  "key_exports": ["main functions, classes, or modules exported"],
+  "frameworks": ["libraries or frameworks used"],
+  "patterns": ["design patterns or architectural patterns observed"],
+  "children_overview": "brief summary of how direct child directories relate to each other; empty string \\"\\" if there are no child directories"
+}
 
-Produce a JSON summary of this directory:
-{{
-    "purpose": "one-sentence description of what this directory does",
-    "key_exports": ["main functions, classes, or modules exported"],
-    "frameworks": ["libraries or frameworks used"],
-    "patterns": ["design patterns or architectural patterns observed"]
-}}"""
+Do not emit any text after the JSON object. If you emit the JSON but your file coverage is below the threshold, you will be asked to read more files and respond again."""
 
-# --- Directory Summary (parent directories with child summaries) ---
+DIR_SUMMARY_USER = """\
+Subtree rooted at: {dir_path}
 
-DIR_SUMMARY_PARENT_SYSTEM = """\
-You are a code analysis expert. You will receive:
-1. Summaries of child subdirectories (already analyzed)
-2. Source files that belong directly to this directory (not in subdirectories)
+Inventory (pre-computed from list_dir(".") so you do not need to call it again):
+  direct subdirectories: {direct_dirs}
+  direct files in this directory: {direct_files}
 
-Synthesize a higher-level summary that captures the overall purpose of this directory, \
-incorporating what its children do and what its own files do.
+Subtree totals: {total_files} file(s), {total_lines} line(s) across all descendants.
 
-Respond ONLY with valid JSON, no explanation."""
-
-DIR_SUMMARY_PARENT_USER = """\
-Directory: {dir_path}
-
-Child directory summaries:
+Child directory summaries already produced (treat as hints; you may verify with read_file):
 {child_summaries}
 
-Direct files in this directory ({file_count}):
-{file_contents}
-
-Produce a JSON summary of this directory (incorporating child summaries):
-{{
-    "purpose": "one-sentence description of what this directory does as a whole",
-    "key_exports": ["main functions, classes, or modules exported"],
-    "frameworks": ["libraries or frameworks used across this directory tree"],
-    "patterns": ["design patterns or architectural patterns observed"],
-    "children_overview": "brief summary of how child directories relate to each other"
-}}"""
+Produce the final JSON summary for `{dir_path}` per the schema in the system prompt. \
+Remember: file coverage across the entire subtree must be at least 70% (or 100% for subtrees with <=3 files)."""

@@ -105,4 +105,26 @@ def scan_repo(repo_path: str, config: ScdConfig) -> RepoScanResult:
         if has_source:
             result.dirs[rel_dir] = dir_info
 
+    _backfill_shell_dirs(result)
     return result
+
+
+def _backfill_shell_dirs(result: RepoScanResult) -> None:
+    """Ensure every ancestor path of a recorded directory is itself present.
+
+    Directories that contain only subdirectories (no direct source files) are
+    dropped by the main scan loop. Re-insert them with empty file lists so the
+    hierarchical summarizer can still traverse and aggregate through them.
+    """
+    existing = set(result.dirs.keys())
+    ancestors_to_add: set[str] = set()
+    for dir_path in list(existing):
+        if not dir_path:
+            continue
+        parts = dir_path.split("/")
+        for i in range(len(parts)):
+            ancestor = "/".join(parts[:i])
+            if ancestor not in existing and ancestor not in ancestors_to_add:
+                ancestors_to_add.add(ancestor)
+    for ancestor in ancestors_to_add:
+        result.dirs[ancestor] = DirInfo(path=ancestor)

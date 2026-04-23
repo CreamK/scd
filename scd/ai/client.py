@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import anthropic
@@ -76,23 +77,138 @@ class ClaudeClient:
                     "Please respond with ONLY valid JSON, no markdown fences, no explanation.",
                 })
 
+    async def ask_json_with_tools(
+        self,
+        system: str,
+        user: str,
+        tools: list[dict],
+        tool_handler: Callable[[str, dict], Awaitable[Any]],
+        *,
+        max_tool_turns: int = 20,
+        validator: Callable[[dict], tuple[bool, str | None]] | None = None,
+        max_tokens: int = 8192,
+    ) -> dict:
+        """Tool-use loop: dispatch tool_use blocks to tool_handler, parse final
+        JSON on end_turn, optionally run validator and loop with a follow-up
+        user message if validator rejects the result.
+
+        - Each messages.create call counts against max_tool_turns.
+        - tool_handler must return something JSON-serializable; it will be
+          wrapped into a tool_result content block.
+        - Raises RuntimeError when max_tool_turns is exhausted without a
+          validated final answer.
+        """
+        messages: list[dict] = [{"role": "user", "content": user}]
+
+        for turn in range(max_tool_turns):
+            response = await self._api_call(
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+            stop_reason = getattr(response, "stop_reason", None)
+            content = response.content or []
+
+            if stop_reason == "tool_use":
+                assistant_blocks: list[dict] = []
+                tool_results: list[dict] = []
+                for block in content:
+                    btype = getattr(block, "type", None)
+                    if btype == "text":
+                        assistant_blocks.append(
+                            {"type": "text", "text": getattr(block, "text", "") or ""}
+                        )
+                    elif btype == "tool_use":
+                        tool_use_id = getattr(block, "id", "")
+                        name = getattr(block, "name", "")
+                        tool_input = getattr(block, "input", {}) or {}
+                        assistant_blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tool_use_id,
+                                "name": name,
+                                "input": tool_input,
+                            }
+                        )
+                        try:
+                            result = await tool_handler(name, tool_input)
+                        except Exception as e:
+                            logger.warning("tool_handler(%s) raised: %s", name, e)
+                            result = {"error": f"{type(e).__name__}: {e}"}
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": json.dumps(result, ensure_ascii=False),
+                            }
+                        )
+                if assistant_blocks:
+                    messages.append({"role": "assistant", "content": assistant_blocks})
+                if tool_results:
+                    messages.append({"role": "user", "content": tool_results})
+                continue
+
+            text = _extract_text_from_content(content)
+            try:
+                result = self._extract_json(text)
+            except (json.JSONDecodeError, ValueError):
+                if turn + 1 >= max_tool_turns:
+                    raise
+                logger.warning(
+                    "JSON parse failed on tool-use end_turn (turn %d/%d), asking model to fix",
+                    turn + 1, max_tool_turns,
+                )
+                messages.append({"role": "assistant", "content": text})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Your previous response was not valid JSON. "
+                        "Respond with ONLY valid JSON, no markdown fences, no explanation.",
+                    }
+                )
+                continue
+
+            if validator is None:
+                return result
+            ok, follow_up = validator(result)
+            if ok:
+                return result
+            messages.append({"role": "assistant", "content": text})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": follow_up
+                    or "Your previous answer was rejected. Please revise and output final JSON.",
+                }
+            )
+
+        raise RuntimeError(
+            f"ask_json_with_tools exhausted max_tool_turns={max_tool_turns} "
+            "without a validated final answer"
+        )
+
     async def _api_call(
         self,
         system: str,
         messages: list[dict],
         max_tokens: int = 8192,
+        tools: list[dict] | None = None,
     ) -> Any:
         """Make a single API call with retries."""
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
                 async with self._rate_limiter:
-                    response = await self._client.messages.create(
-                        model=self._model,
-                        max_tokens=max_tokens,
-                        system=system,
-                        messages=messages,
-                    )
+                    kwargs: dict[str, Any] = {
+                        "model": self._model,
+                        "max_tokens": max_tokens,
+                        "system": system,
+                        "messages": messages,
+                    }
+                    if tools:
+                        kwargs["tools"] = tools
+                    response = await self._client.messages.create(**kwargs)
                 async with self._lock:
                     self.total_calls += 1
                 return response

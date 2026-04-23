@@ -1,7 +1,9 @@
 """Hierarchical directory summarizer with caching.
 
-Generates AI summaries bottom-up: leaf directories first (from code),
-then parent directories (from child summaries + own files).
+Generates AI summaries bottom-up: leaf directories first, parent directories
+after. The LLM is given `list_dir` / `read_file` tools scoped to each
+directory's subtree and must reach a minimum file-read coverage before its
+final JSON is accepted.
 """
 
 from __future__ import annotations
@@ -10,57 +12,70 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 from pathlib import Path
+from typing import Any
 
 from scd.ai.client import ClaudeClient
-from scd.ai.prompts import (
-    DIR_SUMMARY_LEAF_SYSTEM,
-    DIR_SUMMARY_LEAF_USER,
-    DIR_SUMMARY_PARENT_SYSTEM,
-    DIR_SUMMARY_PARENT_USER,
-)
+from scd.ai.prompts import DIR_SUMMARY_SYSTEM, DIR_SUMMARY_USER
+from scd.ai.tools import DIR_SUMMARY_TOOLS, SubtreeFS
 from scd.models import DirInfo, RepoScanResult
 
 logger = logging.getLogger(__name__)
 
-MAX_LINES_PER_FILE = 200
-
 SUMMARY_CACHE_DIR_NAME = ".scd_cache"
 SUMMARY_CACHE_FILE_NAME = "dir_summaries.json"
-SUMMARY_CACHE_VERSION = 1
+SUMMARY_CACHE_VERSION = 2
+PROMPT_VERSION = 1
+
+COVERAGE_THRESHOLD = 0.7
+SMALL_DIR_FORCE_FULL = 3
+BASE_MAX_TOOL_TURNS = 20
+FOLLOW_UP_TOP_K_BUFFER = 2
+UNREAD_HINT_MAX = 15
+
+_PLACEHOLDER_SUMMARY = json.dumps(
+    {
+        "purpose": "unknown",
+        "key_exports": [],
+        "frameworks": [],
+        "patterns": [],
+        "children_overview": "",
+    },
+    ensure_ascii=False,
+)
 
 
-def compute_dir_hash(dir_info: DirInfo, file_contents: dict[str, str]) -> str:
-    """Compute a stable hash for a directory based on its file paths and contents."""
+def compute_subtree_hash(dir_path: str, repo: RepoScanResult) -> str:
+    """Hash every file (path + content) inside the subtree rooted at dir_path.
+
+    Any change to any descendant file invalidates the cached summary.
+    """
     h = hashlib.sha256()
-    for f in sorted(dir_info.files, key=lambda x: x.path):
-        h.update(f.path.encode())
-        content = file_contents.get(f.path, "")
-        h.update(content.encode())
-    return h.hexdigest()[:16]
+    h.update(f"v{SUMMARY_CACHE_VERSION}|prompt={PROMPT_VERSION}".encode())
+    h.update(b"|root=")
+    h.update(dir_path.encode())
 
-
-def compute_parent_hash(
-    dir_info: DirInfo,
-    file_contents: dict[str, str],
-    child_summaries: dict[str, str],
-) -> str:
-    """Compute hash for a parent directory: own files + child summary content."""
-    h = hashlib.sha256()
-    for f in sorted(dir_info.files, key=lambda x: x.path):
-        h.update(f.path.encode())
-        content = file_contents.get(f.path, "")
+    prefix = f"{dir_path}/" if dir_path else ""
+    subtree_files: list[tuple[str, str]] = []
+    for d, dir_info in repo.dirs.items():
+        if dir_path:
+            if d != dir_path and not d.startswith(prefix):
+                continue
+        for f in dir_info.files:
+            subtree_files.append((f.path, repo.file_contents.get(f.path, "")))
+    for path, content in sorted(subtree_files, key=lambda x: x[0]):
+        h.update(b"\x00")
+        h.update(path.encode())
+        h.update(b"\x00")
         h.update(content.encode())
-    for child_dir in sorted(child_summaries.keys()):
-        h.update(child_dir.encode())
-        h.update(child_summaries[child_dir].encode())
     return h.hexdigest()[:16]
 
 
 def load_cache(repo_path: str, model: str) -> dict[str, dict]:
     """Load cached summaries from repo's .scd_cache directory.
 
-    Returns dict: {dir_path: {"content_hash": ..., "summary": ...}}
+    Returns dict: {dir_path: {"content_hash": ..., "summary": ..., ...}}
     """
     cache_path = Path(repo_path) / SUMMARY_CACHE_DIR_NAME / SUMMARY_CACHE_FILE_NAME
     if not cache_path.exists():
@@ -155,66 +170,134 @@ def _get_direct_children(dir_path: str, all_dirs: dict[str, DirInfo]) -> list[st
     return sorted(result)
 
 
-def _format_file_contents(dir_info: DirInfo, file_contents: dict[str, str]) -> str:
-    """Format all files in a directory for the prompt."""
-    parts: list[str] = []
-    for f in sorted(dir_info.files, key=lambda x: x.path):
-        content = file_contents.get(f.path, "")
-        lines = content.splitlines()
-        if len(lines) > MAX_LINES_PER_FILE:
-            truncated = "\n".join(lines[:MAX_LINES_PER_FILE])
-            truncated += f"\n\n... ({len(lines) - MAX_LINES_PER_FILE} more lines, {len(lines)} total)"
-        else:
-            truncated = content
-        parts.append(f"--- {f.path} ({f.language}, {f.line_count} lines) ---\n{truncated}")
-    return "\n\n".join(parts) if parts else "(no direct source files)"
+def _target_coverage_for(fs: SubtreeFS) -> float:
+    if fs.total_files == 0:
+        return 1.0
+    if fs.total_files <= SMALL_DIR_FORCE_FULL:
+        return 1.0
+    return COVERAGE_THRESHOLD
 
 
-async def _summarize_leaf(
-    dir_path: str,
-    dir_info: DirInfo,
-    file_contents: dict[str, str],
-    client: ClaudeClient,
-) -> str:
-    """Generate summary for a leaf directory (no child directories with source files)."""
-    user_msg = DIR_SUMMARY_LEAF_USER.format(
-        dir_path=dir_path or "(root)",
-        file_count=len(dir_info.files),
-        file_contents=_format_file_contents(dir_info, file_contents),
+def _target_files_for(fs: SubtreeFS, target_coverage: float) -> int:
+    if fs.total_files == 0:
+        return 0
+    return max(1, math.ceil(fs.total_files * target_coverage))
+
+
+def _format_inventory_dirs(dirs: list[str]) -> str:
+    if not dirs:
+        return "(none)"
+    return ", ".join(dirs)
+
+
+def _format_inventory_files(files: list[dict[str, Any]]) -> str:
+    if not files:
+        return "(none)"
+    return ", ".join(f"{f['path']} ({f['language']}, {f['line_count']} lines)" for f in files)
+
+
+def _format_child_summaries(child_summaries: dict[str, str]) -> str:
+    if not child_summaries:
+        return "(no child directories)"
+    lines: list[str] = []
+    for child_dir in sorted(child_summaries.keys()):
+        lines.append(f"  [{child_dir}]: {child_summaries[child_dir]}")
+    return "\n".join(lines)
+
+
+def _build_follow_up(fs: SubtreeFS, target_coverage: float) -> str:
+    target_files = _target_files_for(fs, target_coverage)
+    still_needed = max(0, target_files - len(fs.read_paths))
+    top_k = still_needed + FOLLOW_UP_TOP_K_BUFFER
+    unread = fs.unread_files_ranked()[:top_k]
+    unread_hint = (
+        ", ".join(f"{f.path} ({f.line_count} lines)" for f in unread)
+        if unread
+        else "(none)"
     )
-    try:
-        data = await client.ask_json(system=DIR_SUMMARY_LEAF_SYSTEM, user=user_msg)
-        return json.dumps(data, ensure_ascii=False)
-    except Exception as e:
-        logger.error("Failed to summarize leaf dir %s: %s", dir_path, e)
-        return json.dumps({"purpose": "unknown", "key_exports": [], "frameworks": [], "patterns": []})
+    return (
+        f"Your file coverage is {fs.coverage:.0%} "
+        f"({len(fs.read_paths)}/{fs.total_files}). The required minimum is "
+        f"{target_coverage:.0%}. You MUST call read_file on additional files "
+        f"before giving the final JSON. Suggested unread files (largest first): "
+        f"{unread_hint}. After reading them, output ONLY the final JSON."
+    )
 
 
-async def _summarize_parent(
+async def _summarize_dir(
     dir_path: str,
-    dir_info: DirInfo,
-    file_contents: dict[str, str],
+    repo: RepoScanResult,
     child_summaries: dict[str, str],
     client: ClaudeClient,
-) -> str:
-    """Generate summary for a parent directory using child summaries + own files."""
-    child_parts = []
-    for child_dir in sorted(child_summaries.keys()):
-        child_parts.append(f"  [{child_dir}]: {child_summaries[child_dir]}")
-    child_text = "\n".join(child_parts) if child_parts else "(no child directories)"
+) -> tuple[str, dict[str, Any]]:
+    """Summarize a single directory using tool-use with a coverage validator.
 
-    user_msg = DIR_SUMMARY_PARENT_USER.format(
+    Returns (summary_json_str, stats_dict).
+    """
+    fs = SubtreeFS(root_rel=dir_path, repo=repo)
+    target_coverage = _target_coverage_for(fs)
+    target_files = _target_files_for(fs, target_coverage)
+
+    max_tool_turns = max(BASE_MAX_TOOL_TURNS, target_files + 5)
+
+    inventory = fs.list_dir("")
+    direct_dirs_txt = _format_inventory_dirs(inventory.get("dirs", []) or [])
+    direct_files_txt = _format_inventory_files(inventory.get("files", []) or [])
+
+    user_msg = DIR_SUMMARY_USER.format(
         dir_path=dir_path or "(root)",
-        child_summaries=child_text,
-        file_count=len(dir_info.files),
-        file_contents=_format_file_contents(dir_info, file_contents),
+        direct_dirs=direct_dirs_txt,
+        direct_files=direct_files_txt,
+        total_files=fs.total_files,
+        total_lines=fs.total_lines,
+        child_summaries=_format_child_summaries(child_summaries),
     )
+
+    async def tool_handler(name: str, tool_input: dict[str, Any]) -> Any:
+        if name == "list_dir":
+            return fs.list_dir(tool_input.get("path", "") or "")
+        if name == "read_file":
+            return fs.read_file(
+                tool_input.get("path", "") or "",
+                offset=tool_input.get("offset", 0) or 0,
+                limit=tool_input.get("limit", None),
+            )
+        return {"error": f"unknown tool: {name}"}
+
+    def validator(_result: dict) -> tuple[bool, str | None]:
+        if fs.coverage >= target_coverage - 1e-9:
+            return True, None
+        return False, _build_follow_up(fs, target_coverage)
+
+    stats: dict[str, Any] = {
+        "coverage": None,
+        "files_read": 0,
+        "total_files": fs.total_files,
+        "target_coverage": target_coverage,
+    }
+
     try:
-        data = await client.ask_json(system=DIR_SUMMARY_PARENT_SYSTEM, user=user_msg)
-        return json.dumps(data, ensure_ascii=False)
+        result = await client.ask_json_with_tools(
+            system=DIR_SUMMARY_SYSTEM,
+            user=user_msg,
+            tools=DIR_SUMMARY_TOOLS,
+            tool_handler=tool_handler,
+            max_tool_turns=max_tool_turns,
+            validator=validator,
+        )
+        stats["coverage"] = fs.coverage
+        stats["files_read"] = len(fs.read_paths)
+        return json.dumps(result, ensure_ascii=False), stats
     except Exception as e:
-        logger.error("Failed to summarize parent dir %s: %s", dir_path, e)
-        return json.dumps({"purpose": "unknown", "key_exports": [], "frameworks": [], "patterns": [], "children_overview": ""})
+        logger.error(
+            "Failed to summarize dir %s (coverage=%.0f%%, %d/%d files read): %s",
+            dir_path or "(root)", fs.coverage * 100,
+            len(fs.read_paths), fs.total_files, e,
+        )
+        stats["coverage"] = fs.coverage if fs.total_files else None
+        stats["files_read"] = len(fs.read_paths)
+        stats["error"] = f"{type(e).__name__}: {e}"
+        return _PLACEHOLDER_SUMMARY, stats
 
 
 async def summarize_repo(
@@ -225,10 +308,11 @@ async def summarize_repo(
     """Generate hierarchical summaries for all directories in a repo.
 
     Returns {dir_relative_path: summary_json_string}.
-    Uses cache to skip directories that haven't changed.
+    Uses cache to skip directories whose subtree hasn't changed.
     """
     cached = load_cache(repo.root_path, model)
     summaries: dict[str, str] = {}
+    dir_stats: dict[str, dict[str, Any]] = {}
     levels = _build_tree_levels(repo)
 
     cache_hits = 0
@@ -238,47 +322,72 @@ async def summarize_repo(
         tasks: list[tuple[str, asyncio.Task | None]] = []
 
         for dir_path in level_dirs:
-            dir_info = repo.dirs[dir_path]
-            children = _get_direct_children(dir_path, repo.dirs)
-
-            if children:
-                child_sums = {c: summaries[c] for c in children if c in summaries}
-                content_hash = compute_parent_hash(dir_info, repo.file_contents, child_sums)
-            else:
-                content_hash = compute_dir_hash(dir_info, repo.file_contents)
-
+            content_hash = compute_subtree_hash(dir_path, repo)
             cached_entry = cached.get(dir_path)
             if cached_entry and cached_entry.get("content_hash") == content_hash:
                 summaries[dir_path] = cached_entry["summary"]
+                dir_stats[dir_path] = {
+                    "coverage": cached_entry.get("coverage"),
+                    "files_read": cached_entry.get("files_read", 0),
+                    "total_files": cached_entry.get("total_files", 0),
+                    "cached": True,
+                }
                 cache_hits += 1
                 tasks.append((dir_path, None))
                 continue
 
-            if children:
-                child_sums = {c: summaries[c] for c in children if c in summaries}
-                coro = _summarize_parent(dir_path, dir_info, repo.file_contents, child_sums, client)
-            else:
-                coro = _summarize_leaf(dir_path, dir_info, repo.file_contents, client)
-
+            children = _get_direct_children(dir_path, repo.dirs)
+            child_sums = {c: summaries[c] for c in children if c in summaries}
+            coro = _summarize_dir(dir_path, repo, child_sums, client)
             task = asyncio.create_task(coro)
             tasks.append((dir_path, task))
 
         for dir_path, task in tasks:
-            if task is not None:
-                summaries[dir_path] = await task
-                generated += 1
+            if task is None:
+                continue
+            summary_json, stats = await task
+            summaries[dir_path] = summary_json
+            dir_stats[dir_path] = stats
+            generated += 1
 
-                dir_info = repo.dirs[dir_path]
-                children = _get_direct_children(dir_path, repo.dirs)
-                if children:
-                    child_sums = {c: summaries[c] for c in children if c in summaries}
-                    content_hash = compute_parent_hash(dir_info, repo.file_contents, child_sums)
-                else:
-                    content_hash = compute_dir_hash(dir_info, repo.file_contents)
+            content_hash = compute_subtree_hash(dir_path, repo)
+            cached[dir_path] = {
+                "content_hash": content_hash,
+                "summary": summary_json,
+                "coverage": stats.get("coverage"),
+                "files_read": stats.get("files_read", 0),
+                "total_files": stats.get("total_files", 0),
+            }
 
-                cached[dir_path] = {"content_hash": content_hash, "summary": summaries[dir_path]}
+            coverage = stats.get("coverage")
+            coverage_txt = f"{coverage:.0%}" if isinstance(coverage, (int, float)) else "n/a"
+            logger.info(
+                "summarized %s: read %d/%d files (%s)",
+                dir_path or "(root)",
+                stats.get("files_read", 0),
+                stats.get("total_files", 0),
+                coverage_txt,
+            )
 
     save_cache(repo.root_path, model, cached)
+
+    coverages = [
+        s["coverage"] for s in dir_stats.values()
+        if isinstance(s.get("coverage"), (int, float))
+    ]
+    below = [
+        d for d, s in dir_stats.items()
+        if isinstance(s.get("coverage"), (int, float))
+        and s["coverage"] < COVERAGE_THRESHOLD
+        and s.get("total_files", 0) > 0
+    ]
+    if coverages:
+        logger.info(
+            "coverage stats: min=%.0f%%, avg=%.0f%%, below-threshold dirs=%s",
+            min(coverages) * 100,
+            (sum(coverages) / len(coverages)) * 100,
+            [d or "(root)" for d in below],
+        )
 
     logger.info(
         "Summarized %d directories: %d generated, %d from cache",
