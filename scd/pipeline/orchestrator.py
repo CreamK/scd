@@ -94,8 +94,18 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print("\n[bold blue]Phase 2b:[/] Matching directories...")
     t2 = time.monotonic()
 
+    match_summaries_a = {k: v for k, v in summaries_a.items() if k != ""}
+    match_summaries_b = {k: v for k, v in summaries_b.items() if k != ""}
+    dropped_a = len(summaries_a) - len(match_summaries_a)
+    dropped_b = len(summaries_b) - len(match_summaries_b)
+    if dropped_a or dropped_b:
+        logger.info(
+            "Excluding root directories from matching (A=%d, B=%d dropped)",
+            dropped_a, dropped_b,
+        )
+
     match_key = compute_match_key(
-        summaries_a, summaries_b, config.model, config.match_batch_size,
+        match_summaries_a, match_summaries_b, config.model, config.match_batch_size,
     )
     cached_match = load_match_cache(output_dir, match_key)
     if cached_match is not None:
@@ -105,7 +115,7 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         )
     else:
         dir_result = await match_directories(
-            repo_a, repo_b, summaries_a, summaries_b, client,
+            repo_a, repo_b, match_summaries_a, match_summaries_b, client,
             batch_size=config.match_batch_size,
         )
         cache_path = save_match_cache(output_dir, match_key, dir_result)

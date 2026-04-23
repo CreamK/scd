@@ -161,19 +161,37 @@ class PairCache:
         return self._path
 
 
+def _iter_subtree_files(repo: RepoScanResult, dir_path: str) -> list[str]:
+    """Collect paths of every source file under `dir_path` (inclusive, recursive).
+
+    `dir_path == ""` is the repo root, i.e. the whole repo.
+    """
+    prefix = f"{dir_path}/" if dir_path else ""
+    paths: list[str] = []
+    for d, dir_info in repo.dirs.items():
+        if dir_path and d != dir_path and not d.startswith(prefix):
+            continue
+        for f in dir_info.files:
+            paths.append(f.path)
+    return paths
+
+
 def _build_file_pairs(
     match: DirMatch,
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
 ) -> list[tuple[str, str]]:
-    """Generate all file pairs (n x m) for a matched directory pair."""
-    dir_a = repo_a.dirs.get(match.dir_a)
-    dir_b = repo_b.dirs.get(match.dir_b)
-    if not dir_a or not dir_b:
+    """Generate all file pairs (n x m) for a matched directory pair.
+
+    A matched directory claims every file under its subtree on both sides, so
+    files in nested subdirectories also participate in comparison. Cross-match
+    duplicates are removed later by ``build_all_file_pairs``.
+    """
+    if match.dir_a not in repo_a.dirs or match.dir_b not in repo_b.dirs:
         return []
 
-    files_a = [f.path for f in dir_a.files]
-    files_b = [f.path for f in dir_b.files]
+    files_a = _iter_subtree_files(repo_a, match.dir_a)
+    files_b = _iter_subtree_files(repo_b, match.dir_b)
     return list(product(files_a, files_b))
 
 
@@ -292,17 +310,34 @@ def build_all_file_pairs(
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
 ) -> list[tuple[str, str]]:
-    """Build all file pairs (n x m) from matched directory pairs."""
-    all_pairs: list[tuple[str, str]] = []
+    """Build all file pairs from matched directory pairs, deduplicated.
+
+    For each matched directory pair, every source file under the A-side subtree
+    is paired with every source file under the B-side subtree. Pairs that
+    appear in multiple matches (e.g. when matches nest) are kept once.
+    Insertion order is preserved so output is deterministic.
+    """
+    seen: set[tuple[str, str]] = set()
+    unique_pairs: list[tuple[str, str]] = []
     for match in matched_dirs:
         pairs = _build_file_pairs(match, repo_a, repo_b)
-        all_pairs.extend(pairs)
+        new_count = 0
+        for fa, fb in pairs:
+            key = (fa, fb)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_pairs.append(key)
+            new_count += 1
         logger.info(
-            "Dir pair %s <-> %s: %d file pairs",
-            match.dir_a, match.dir_b, len(pairs),
+            "Dir pair %s <-> %s: %d file pairs (subtree), %d new after dedup",
+            match.dir_a or "(root)",
+            match.dir_b or "(root)",
+            len(pairs),
+            new_count,
         )
-    logger.info("Total file pairs to compare: %d", len(all_pairs))
-    return all_pairs
+    logger.info("Total unique file pairs to compare: %d", len(unique_pairs))
+    return unique_pairs
 
 
 async def compare_file_pairs(
