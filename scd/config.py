@@ -52,7 +52,7 @@ DEFAULT_IGNORE_FILES = {
 class ScdConfig:
     api_key: str | None = None
     base_url: str | None = None
-    concurrency: int = 10
+    rps: float = 3.0
     similarity_threshold: int = 20
     max_file_lines: int = 10000
     model: str = "claude-sonnet-4-20250514"

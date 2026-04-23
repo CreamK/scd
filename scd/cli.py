@@ -34,7 +34,7 @@ def main() -> None:
 @click.option("-o", "--output", default=None, help="Output report file path (overrides --output-dir default).")
 @click.option("--output-dir", default="output", help="Output directory for all artifacts (default: output).")
 @click.option("-f", "--format", "fmt", type=click.Choice(["markdown", "json"]), default="markdown", help="Output format.")
-@click.option("-c", "--concurrency", default=10, type=int, help="Max concurrent AI calls.")
+@click.option("-r", "--rps", default=3.0, type=float, help="Max requests per second to the AI API.")
 @click.option("-t", "--threshold", default=20, type=int, help="Minimum composite similarity score (0-100, default 20).")
 @click.option("-m", "--model", default="claude-sonnet-4-20250514", help="Claude model to use.")
 @click.option("--api-key", envvar="ANTHROPIC_API_KEY", default=None, help="Anthropic API key (or set ANTHROPIC_API_KEY env var).")
@@ -49,7 +49,7 @@ def compare(
     output: str | None,
     output_dir: str,
     fmt: str,
-    concurrency: int,
+    rps: float,
     threshold: int,
     model: str,
     api_key: str | None,
@@ -69,8 +69,8 @@ def compare(
         base_url = env.get("ANTHROPIC_BASE_URL")
     if model == "claude-sonnet-4-20250514" and env.get("ANTHROPIC_MODEL"):
         model = env["ANTHROPIC_MODEL"]
-    if concurrency == 10 and env.get("CONCURRENCY"):
-        concurrency = int(env["CONCURRENCY"])
+    if rps == 3.0 and env.get("RPS"):
+        rps = float(env["RPS"])
     if match_batch_size == 40 and env.get("MATCH_BATCH_SIZE"):
         match_batch_size = int(env["MATCH_BATCH_SIZE"])
 
@@ -81,7 +81,7 @@ def compare(
     config = ScdConfig(
         api_key=api_key,
         base_url=base_url,
-        concurrency=concurrency,
+        rps=rps,
         similarity_threshold=threshold,
         model=model,
         output_format=fmt,

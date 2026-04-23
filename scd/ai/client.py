@@ -8,8 +8,8 @@ from typing import Any
 
 import anthropic
 import httpx
+from aiolimiter import AsyncLimiter
 
-from scd.ai.rate_limiter import RateLimiter
 from scd.config import ScdConfig
 
 logger = logging.getLogger(__name__)
@@ -46,11 +46,8 @@ class ClaudeClient:
         )
         self._client = anthropic.AsyncAnthropic(**kwargs)
         self._model = config.model
-        self._rate_limiter = RateLimiter(
-            max_concurrent=config.concurrency,
-            requests_per_second=config.concurrency,
-        )
-        logger.info("Rate limiter: max_concurrent=%d, rps=%.1f", config.concurrency, config.concurrency)
+        self._rate_limiter = AsyncLimiter(max_rate=config.rps, time_period=1.0)
+        logger.info("Rate limiter: rps=%.1f", config.rps)
         self.total_calls = 0
         self._lock = asyncio.Lock()
 
