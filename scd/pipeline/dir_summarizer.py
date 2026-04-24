@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +25,12 @@ from scd.models import DirInfo, RepoScanResult
 logger = logging.getLogger(__name__)
 
 SUMMARY_CACHE_DIR_NAME = ".scd_cache"
-SUMMARY_CACHE_FILE_NAME = "dir_summaries.json"
-SUMMARY_CACHE_VERSION = 3
+SUMMARY_CACHE_FILE_NAME = "dir_summaries.jsonl"
+SUMMARY_CACHE_VERSION = 4
 PROMPT_VERSION = 1
+
+COMPACTION_RATIO = 2
+COMPACTION_MIN_LINES = 20
 
 COVERAGE_THRESHOLD = 0.7
 SMALL_DIR_FORCE_FULL = 3
@@ -72,44 +76,102 @@ def compute_subtree_hash(dir_path: str, repo: RepoScanResult) -> str:
     return h.hexdigest()[:16]
 
 
-def load_cache(repo_path: str, model: str) -> dict[str, dict]:
-    """Load cached summaries from repo's .scd_cache directory.
+class SummaryCache:
+    """Append-only JSONL cache of directory summaries.
 
-    Returns dict: {dir_path: {"content_hash": ..., "summary": ..., ...}}
+    One line per directory result. When the same dir appears on multiple lines,
+    the last one wins. A cheap compaction is triggered at load time when the
+    ratio of raw lines to unique dirs gets too high.
     """
-    cache_path = Path(repo_path) / SUMMARY_CACHE_DIR_NAME / SUMMARY_CACHE_FILE_NAME
-    if not cache_path.exists():
-        return {}
 
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read cache at %s: %s", cache_path, e)
-        return {}
+    def __init__(self, repo_path: str, model: str) -> None:
+        self._path = Path(repo_path) / SUMMARY_CACHE_DIR_NAME / SUMMARY_CACHE_FILE_NAME
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._model = model
+        self._store: dict[str, dict] = {}
+        self._raw_lines = 0
+        self._lock = asyncio.Lock()
 
-    if data.get("version") != SUMMARY_CACHE_VERSION or data.get("model") != model:
-        logger.info("Cache invalidated (version/model mismatch)")
-        return {}
+    @property
+    def path(self) -> Path:
+        return self._path
 
-    return data.get("directories", {})
+    def load(self) -> int:
+        """Populate in-memory store from disk. Returns unique dir count."""
+        if not self._path.exists():
+            return 0
+        malformed = 0
+        mismatched = 0
+        with self._path.open("r", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError as e:
+                    malformed += 1
+                    logger.warning(
+                        "Skipping malformed cache line %d in %s: %s",
+                        line_no, self._path, e,
+                    )
+                    continue
+                if data.get("v") != SUMMARY_CACHE_VERSION:
+                    mismatched += 1
+                    continue
+                if data.get("model") != self._model:
+                    mismatched += 1
+                    continue
+                dir_path = data.get("dir")
+                if dir_path is None:
+                    malformed += 1
+                    continue
+                self._store[dir_path] = data
+                self._raw_lines += 1
+        if malformed:
+            logger.warning("%d malformed lines skipped in %s", malformed, self._path)
+        if mismatched:
+            logger.info(
+                "Ignored %d cache lines with stale version/model in %s",
+                mismatched, self._path,
+            )
+        if (
+            self._raw_lines > COMPACTION_RATIO * max(len(self._store), 1)
+            and self._raw_lines > COMPACTION_MIN_LINES
+        ):
+            self._compact()
+        return len(self._store)
 
+    def get(self, dir_path: str) -> dict | None:
+        return self._store.get(dir_path)
 
-def save_cache(repo_path: str, model: str, directories: dict[str, dict]) -> str:
-    """Save directory summaries to repo's .scd_cache directory. Returns cache file path."""
-    cache_dir = Path(repo_path) / SUMMARY_CACHE_DIR_NAME
-    cache_dir.mkdir(exist_ok=True)
-    cache_path = cache_dir / SUMMARY_CACHE_FILE_NAME
+    async def put(self, dir_path: str, entry: dict) -> None:
+        """Append one directory's result and update the in-memory store."""
+        record = {
+            "v": SUMMARY_CACHE_VERSION,
+            "model": self._model,
+            "dir": dir_path,
+            **entry,
+        }
+        async with self._lock:
+            self._store[dir_path] = record
+            with self._path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.flush()
+            self._raw_lines += 1
 
-    data = {
-        "version": SUMMARY_CACHE_VERSION,
-        "model": model,
-        "directories": directories,
-    }
-    cache_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    return str(cache_path)
+    def _compact(self) -> None:
+        """Rewrite the file keeping only the latest entry per dir."""
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for record in self._store.values():
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        os.replace(tmp, self._path)
+        logger.info(
+            "Compacted %s: %d raw lines -> %d unique entries",
+            self._path, self._raw_lines, len(self._store),
+        )
+        self._raw_lines = len(self._store)
 
 
 def _build_tree_levels(repo: RepoScanResult) -> list[list[str]]:
@@ -310,7 +372,10 @@ async def summarize_repo(
     Returns {dir_relative_path: summary_json_string}.
     Uses cache to skip directories whose subtree hasn't changed.
     """
-    cached = load_cache(repo.root_path, model)
+    cache = SummaryCache(repo.root_path, model)
+    loaded = cache.load()
+    if loaded:
+        logger.info("Loaded %d cached dir summaries from %s", loaded, cache.path)
     summaries: dict[str, str] = {}
     dir_stats: dict[str, dict[str, Any]] = {}
     levels = _build_tree_levels(repo)
@@ -323,7 +388,7 @@ async def summarize_repo(
 
         for dir_path in level_dirs:
             content_hash = compute_subtree_hash(dir_path, repo)
-            cached_entry = cached.get(dir_path)
+            cached_entry = cache.get(dir_path)
             if cached_entry and cached_entry.get("content_hash") == content_hash:
                 summaries[dir_path] = cached_entry["summary"]
                 dir_stats[dir_path] = {
@@ -350,14 +415,22 @@ async def summarize_repo(
             dir_stats[dir_path] = stats
             generated += 1
 
+            if "error" in stats:
+                logger.warning(
+                    "Skip cache write for %s due to summarize error; "
+                    "keep previous entry if any",
+                    dir_path or "(root)",
+                )
+                continue
+
             content_hash = compute_subtree_hash(dir_path, repo)
-            cached[dir_path] = {
+            await cache.put(dir_path, {
                 "content_hash": content_hash,
                 "summary": summary_json,
                 "coverage": stats.get("coverage"),
                 "files_read": stats.get("files_read", 0),
                 "total_files": stats.get("total_files", 0),
-            }
+            })
 
             coverage = stats.get("coverage")
             coverage_txt = f"{coverage:.0%}" if isinstance(coverage, (int, float)) else "n/a"
@@ -368,8 +441,6 @@ async def summarize_repo(
                 stats.get("total_files", 0),
                 coverage_txt,
             )
-
-    save_cache(repo.root_path, model, cached)
 
     coverages = [
         s["coverage"] for s in dir_stats.values()
