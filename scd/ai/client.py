@@ -7,9 +7,15 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import anthropic
 import httpx
 from aiolimiter import AsyncLimiter
+from openai import (
+    APIConnectionError,
+    APIError,
+    AsyncOpenAI,
+    BadRequestError,
+    RateLimitError,
+)
 
 from scd.config import ScdConfig
 
@@ -21,46 +27,53 @@ INITIAL_BACKOFF = 3.0
 API_TIMEOUT_SECONDS = 180.0
 
 
-def _extract_text_from_content(content: list) -> str:
-    """Extract text from response content blocks, skipping ThinkingBlock etc."""
-    for block in content:
-        if hasattr(block, "type") and block.type == "text" and hasattr(block, "text"):
-            return block.text
-    return ""
+class LlmClient:
+    """Async wrapper around an OpenAI-compatible Chat Completions endpoint.
 
-
-class ClaudeClient:
-    """Async wrapper around the Anthropic API with rate limiting and retries."""
+    Handles rate limiting, retries with backoff, and capability downgrade for
+    self-hosted gateways that only partially implement the OpenAI spec
+    (response_format, parallel_tool_calls, tool_choice).
+    """
 
     def __init__(self, config: ScdConfig) -> None:
-        kwargs: dict = {}
+        kwargs: dict[str, Any] = {
+            "max_retries": 0,
+            "timeout": httpx.Timeout(
+                connect=API_TIMEOUT_SECONDS,
+                read=API_TIMEOUT_SECONDS,
+                write=API_TIMEOUT_SECONDS,
+                pool=API_TIMEOUT_SECONDS,
+            ),
+        }
         if config.api_key:
             kwargs["api_key"] = config.api_key
         if config.base_url:
             kwargs["base_url"] = config.base_url
-        kwargs["max_retries"] = 0
-        kwargs["timeout"] = httpx.Timeout(
-            connect=API_TIMEOUT_SECONDS,
-            read=API_TIMEOUT_SECONDS,
-            write=API_TIMEOUT_SECONDS,
-            pool=API_TIMEOUT_SECONDS,
-        )
-        self._client = anthropic.AsyncAnthropic(**kwargs)
+        self._client = AsyncOpenAI(**kwargs)
         self._model = config.model
         self._rate_limiter = AsyncLimiter(max_rate=config.rps, time_period=1.0)
         logger.info("Rate limiter: rps=%.1f", config.rps)
         self.total_calls = 0
         self._lock = asyncio.Lock()
+        # Capability flags. Start from user config; auto-downgrade on 400.
+        self._caps: dict[str, bool] = {
+            "json_mode": bool(config.use_json_mode),
+            "parallel_tool_calls": bool(config.parallel_tool_calls),
+            "tool_choice": True,
+        }
 
     async def ask_json(self, system: str, user: str, max_tokens: int = 8192) -> dict:
         """Send a prompt and parse the response as JSON, with auto-retry on parse failure."""
-        messages = [{"role": "user", "content": user}]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
 
         for attempt in range(1 + JSON_PARSE_RETRIES):
-            response = await self._api_call(
-                system=system, messages=messages, max_tokens=max_tokens,
+            resp = await self._chat(
+                messages, max_tokens=max_tokens, want_json=True,
             )
-            text = _extract_text_from_content(response.content) if response.content else ""
+            text = self._extract_message_text(resp) or ""
             try:
                 return self._extract_json(text)
             except (json.JSONDecodeError, ValueError):
@@ -88,85 +101,89 @@ class ClaudeClient:
         validator: Callable[[dict], tuple[bool, str | None]] | None = None,
         max_tokens: int = 8192,
     ) -> dict:
-        """Tool-use loop: dispatch tool_use blocks to tool_handler, parse final
-        JSON on end_turn, optionally run validator and loop with a follow-up
-        user message if validator rejects the result.
+        """Tool-use loop using OpenAI Chat Completions tool_calls protocol.
 
-        - Each messages.create call counts against max_tool_turns.
+        - Each chat.completions.create call counts against max_tool_turns.
         - tool_handler must return something JSON-serializable; it will be
-          wrapped into a tool_result content block.
+          wrapped into a role="tool" message.
         - Raises RuntimeError when max_tool_turns is exhausted without a
           validated final answer.
         """
-        messages: list[dict] = [{"role": "user", "content": user}]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
 
         for turn in range(max_tool_turns):
-            response = await self._api_call(
-                system=system,
-                messages=messages,
+            resp = await self._chat(
+                messages,
                 max_tokens=max_tokens,
                 tools=tools,
+                want_json=False,
             )
-            stop_reason = getattr(response, "stop_reason", None)
-            content = response.content or []
+            choice = resp.choices[0]
+            msg = choice.message
+            finish = choice.finish_reason
+            tool_calls = getattr(msg, "tool_calls", None) or []
 
-            if stop_reason == "tool_use":
-                assistant_blocks: list[dict] = []
-                tool_results: list[dict] = []
-                for block in content:
-                    btype = getattr(block, "type", None)
-                    if btype == "text":
-                        assistant_blocks.append(
-                            {"type": "text", "text": getattr(block, "text", "") or ""}
+            if finish == "tool_calls" or tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {
+                                "name": c.function.name,
+                                "arguments": c.function.arguments or "{}",
+                            },
+                        }
+                        for c in tool_calls
+                    ],
+                })
+                for c in tool_calls:
+                    name = c.function.name
+                    raw_args = c.function.arguments or "{}"
+                    try:
+                        args = json.loads(raw_args)
+                        if not isinstance(args, dict):
+                            args = {}
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Tool %s had invalid JSON arguments: %s",
+                            name, raw_args[:200],
                         )
-                    elif btype == "tool_use":
-                        tool_use_id = getattr(block, "id", "")
-                        name = getattr(block, "name", "")
-                        tool_input = getattr(block, "input", {}) or {}
-                        assistant_blocks.append(
-                            {
-                                "type": "tool_use",
-                                "id": tool_use_id,
-                                "name": name,
-                                "input": tool_input,
-                            }
-                        )
-                        try:
-                            result = await tool_handler(name, tool_input)
-                        except Exception as e:
-                            logger.warning("tool_handler(%s) raised: %s", name, e)
-                            result = {"error": f"{type(e).__name__}: {e}"}
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": tool_use_id,
-                                "content": json.dumps(result, ensure_ascii=False),
-                            }
-                        )
-                if assistant_blocks:
-                    messages.append({"role": "assistant", "content": assistant_blocks})
-                if tool_results:
-                    messages.append({"role": "user", "content": tool_results})
+                        args = {}
+                    try:
+                        result = await tool_handler(name, args)
+                    except Exception as e:
+                        logger.warning("tool_handler(%s) raised: %s", name, e)
+                        result = {"error": f"{type(e).__name__}: {e}"}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": c.id,
+                        "name": name,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
                 continue
 
-            text = _extract_text_from_content(content)
+            text = msg.content or ""
             try:
                 result = self._extract_json(text)
             except (json.JSONDecodeError, ValueError):
                 if turn + 1 >= max_tool_turns:
                     raise
                 logger.warning(
-                    "JSON parse failed on tool-use end_turn (turn %d/%d), asking model to fix",
+                    "JSON parse failed on tool-use final turn (%d/%d), asking model to fix",
                     turn + 1, max_tool_turns,
                 )
                 messages.append({"role": "assistant", "content": text})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "Your previous response was not valid JSON. "
-                        "Respond with ONLY valid JSON, no markdown fences, no explanation.",
-                    }
-                )
+                messages.append({
+                    "role": "user",
+                    "content": "Your previous response was not valid JSON. "
+                    "Respond with ONLY valid JSON, no markdown fences, no explanation.",
+                })
                 continue
 
             if validator is None:
@@ -175,60 +192,131 @@ class ClaudeClient:
             if ok:
                 return result
             messages.append({"role": "assistant", "content": text})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": follow_up
-                    or "Your previous answer was rejected. Please revise and output final JSON.",
-                }
-            )
+            messages.append({
+                "role": "user",
+                "content": follow_up
+                or "Your previous answer was rejected. Please revise and output final JSON.",
+            })
 
         raise RuntimeError(
             f"ask_json_with_tools exhausted max_tool_turns={max_tool_turns} "
             "without a validated final answer"
         )
 
-    async def _api_call(
+    async def _chat(
         self,
-        system: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
+        *,
         max_tokens: int = 8192,
         tools: list[dict] | None = None,
+        want_json: bool = False,
     ) -> Any:
-        """Make a single API call with retries."""
+        """Low-level Chat Completions call with retries and capability downgrade."""
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
                 async with self._rate_limiter:
                     kwargs: dict[str, Any] = {
                         "model": self._model,
-                        "max_tokens": max_tokens,
-                        "system": system,
                         "messages": messages,
+                        "max_tokens": max_tokens,
                     }
                     if tools:
                         kwargs["tools"] = tools
-                    response = await self._client.messages.create(**kwargs)
+                        if self._caps["tool_choice"]:
+                            kwargs["tool_choice"] = "auto"
+                        if self._caps["parallel_tool_calls"]:
+                            kwargs["parallel_tool_calls"] = True
+                    if want_json and self._caps["json_mode"] and not tools:
+                        kwargs["response_format"] = {"type": "json_object"}
+                    resp = await self._client.chat.completions.create(**kwargs)
                 async with self._lock:
                     self.total_calls += 1
-                return response
-            except anthropic.RateLimitError:
+                return resp
+            except RateLimitError:
                 backoff = INITIAL_BACKOFF * (2 ** attempt)
-                logger.warning("Rate limited, retrying in %.1fs (attempt %d/%d)", backoff, attempt + 1, MAX_RETRIES)
+                logger.warning(
+                    "Rate limited, retrying in %.1fs (attempt %d/%d)",
+                    backoff, attempt + 1, MAX_RETRIES,
+                )
                 await asyncio.sleep(backoff)
-            except anthropic.APIConnectionError as e:
+            except BadRequestError as e:
+                # Self-hosted gateways often reject optional fields -> downgrade once.
+                emsg = (str(e) or "").lower()
+                downgraded = False
+                if "response_format" in emsg and self._caps["json_mode"]:
+                    logger.warning(
+                        "Endpoint rejected response_format; disabling json_mode "
+                        "for the rest of this session"
+                    )
+                    self._caps["json_mode"] = False
+                    downgraded = True
+                if "parallel_tool_calls" in emsg and self._caps["parallel_tool_calls"]:
+                    logger.warning(
+                        "Endpoint rejected parallel_tool_calls; disabling for the "
+                        "rest of this session"
+                    )
+                    self._caps["parallel_tool_calls"] = False
+                    downgraded = True
+                if "tool_choice" in emsg and self._caps["tool_choice"]:
+                    logger.warning(
+                        "Endpoint rejected tool_choice; disabling for the rest of "
+                        "this session"
+                    )
+                    self._caps["tool_choice"] = False
+                    downgraded = True
+                if not downgraded:
+                    raise
+                # Retry immediately with the downgraded capability.
+            except APIConnectionError as e:
                 last_error = e
                 backoff = INITIAL_BACKOFF * (2 ** attempt)
                 cause = repr(e.__cause__) if e.__cause__ else str(e)
-                logger.warning("Connection error: %s, retrying in %.1fs (attempt %d/%d)", cause, backoff, attempt + 1, MAX_RETRIES)
+                logger.warning(
+                    "Connection error: %s, retrying in %.1fs (attempt %d/%d)",
+                    cause, backoff, attempt + 1, MAX_RETRIES,
+                )
                 await asyncio.sleep(backoff)
-            except anthropic.APIError as e:
+            except APIError as e:
                 last_error = e
                 backoff = INITIAL_BACKOFF * (2 ** attempt)
-                logger.warning("API error: %s, retrying in %.1fs (attempt %d/%d)", e, backoff, attempt + 1, MAX_RETRIES)
+                logger.warning(
+                    "API error: %s, retrying in %.1fs (attempt %d/%d)",
+                    e, backoff, attempt + 1, MAX_RETRIES,
+                )
                 await asyncio.sleep(backoff)
 
         raise RuntimeError(f"Failed after {MAX_RETRIES} retries: {last_error}")
+
+    @staticmethod
+    def _extract_message_text(resp: Any) -> str:
+        """Pull out assistant text from a Chat Completions response.
+
+        Robust to providers that return either a plain string or a list of
+        content parts (some OpenAI-compatible servers do the latter).
+        """
+        try:
+            msg = resp.choices[0].message
+        except (AttributeError, IndexError):
+            return ""
+        content = getattr(msg, "content", None)
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    text = getattr(block, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        return ""
 
     @staticmethod
     def _extract_json(text: str) -> dict:

@@ -8,7 +8,7 @@ from dataclasses import asdict
 from itertools import product
 from pathlib import Path
 
-from scd.ai.client import ClaudeClient
+from scd.ai.client import LlmClient
 from scd.ai.prompts import FUNCTION_COMPARE_SYSTEM, FUNCTION_COMPARE_USER
 from scd.config import ScdConfig
 from scd.models import (
@@ -248,13 +248,13 @@ async def _compare_file_pair(
     file_b: str,
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
-    client: ClaudeClient,
+    client: LlmClient,
     threshold: int,
     model: str,
     cache: PairCache | None = None,
     progress: dict | None = None,
 ) -> CompareResult:
-    """Compare two files using Claude AI, with optional checkpoint cache."""
+    """Compare two files using the configured LLM, with optional checkpoint cache."""
     code_a = repo_a.file_contents.get(file_a, "")
     code_b = repo_b.file_contents.get(file_b, "")
 
@@ -344,7 +344,7 @@ async def compare_file_pairs(
     file_pairs: list[tuple[str, str]],
     repo_a: RepoScanResult,
     repo_b: RepoScanResult,
-    client: ClaudeClient,
+    client: LlmClient,
     config: ScdConfig,
     cache: PairCache | None = None,
 ) -> list[CompareResult]:

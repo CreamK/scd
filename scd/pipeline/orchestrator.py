@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from scd.ai.client import ClaudeClient
+from scd.ai.client import LlmClient
 from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
 from scd.pipeline.dir_summarizer import summarize_repo
@@ -55,7 +55,7 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     output_dir = config.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    client = ClaudeClient(config)
+    client = LlmClient(config)
 
     # --- Phase 1: Scan ---
     console.print("\n[bold blue]Phase 1:[/] Scanning repositories...")

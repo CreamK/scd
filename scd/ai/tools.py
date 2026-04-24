@@ -177,52 +177,60 @@ class SubtreeFS:
 
 DIR_SUMMARY_TOOLS: list[dict[str, Any]] = [
     {
-        "name": "list_dir",
-        "description": (
-            "List immediate subdirectories and source files of a directory "
-            "inside the current subtree. Paths are relative to the subtree "
-            "root. Use '.' or '' for the subtree root."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "Directory path relative to the subtree root.",
-                }
+        "type": "function",
+        "function": {
+            "name": "list_dir",
+            "description": (
+                "List immediate subdirectories and source files of a directory "
+                "inside the current subtree. Paths are relative to the subtree "
+                "root. Use '.' or '' for the subtree root."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path relative to the subtree root.",
+                    }
+                },
+                "required": [],
+                "additionalProperties": False,
             },
-            "required": [],
         },
     },
     {
-        "name": "read_file",
-        "description": (
-            "Read a source file inside the current subtree. Returns at most "
-            f"{READ_FILE_DEFAULT_LIMIT} lines per call; use offset to paginate "
-            "if 'truncated' is true. Reading a file contributes to coverage."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to the subtree root.",
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read a source file inside the current subtree. Returns at most "
+                f"{READ_FILE_DEFAULT_LIMIT} lines per call; use offset to paginate "
+                "if 'truncated' is true. Reading a file contributes to coverage."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the subtree root.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based line offset to start reading from.",
+                        "default": 0,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of lines to return. "
+                            f"Defaults to {READ_FILE_DEFAULT_LIMIT}."
+                        ),
+                        "default": READ_FILE_DEFAULT_LIMIT,
+                    },
                 },
-                "offset": {
-                    "type": "integer",
-                    "description": "Zero-based line offset to start reading from.",
-                    "default": 0,
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": (
-                        "Maximum number of lines to return. "
-                        f"Defaults to {READ_FILE_DEFAULT_LIMIT}."
-                    ),
-                    "default": READ_FILE_DEFAULT_LIMIT,
-                },
+                "required": ["path"],
+                "additionalProperties": False,
             },
-            "required": ["path"],
         },
     },
 ]

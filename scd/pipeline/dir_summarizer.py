@@ -16,7 +16,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from scd.ai.client import ClaudeClient
+from scd.ai.client import LlmClient
 from scd.ai.prompts import DIR_SUMMARY_SYSTEM, DIR_SUMMARY_USER
 from scd.ai.tools import DIR_SUMMARY_TOOLS, SubtreeFS
 from scd.models import DirInfo, RepoScanResult
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_CACHE_DIR_NAME = ".scd_cache"
 SUMMARY_CACHE_FILE_NAME = "dir_summaries.json"
-SUMMARY_CACHE_VERSION = 2
+SUMMARY_CACHE_VERSION = 3
 PROMPT_VERSION = 1
 
 COVERAGE_THRESHOLD = 0.7
@@ -228,7 +228,7 @@ async def _summarize_dir(
     dir_path: str,
     repo: RepoScanResult,
     child_summaries: dict[str, str],
-    client: ClaudeClient,
+    client: LlmClient,
 ) -> tuple[str, dict[str, Any]]:
     """Summarize a single directory using tool-use with a coverage validator.
 
@@ -302,7 +302,7 @@ async def _summarize_dir(
 
 async def summarize_repo(
     repo: RepoScanResult,
-    client: ClaudeClient,
+    client: LlmClient,
     model: str,
 ) -> dict[str, str]:
     """Generate hierarchical summaries for all directories in a repo.

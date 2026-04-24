@@ -55,10 +55,15 @@ class ScdConfig:
     rps: float = 3.0
     similarity_threshold: int = 20
     max_file_lines: int = 10000
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "gpt-4o-mini"
     output_format: str = "markdown"
     output_path: str | None = None
     output_dir: str = "output"
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
     match_batch_size: int = 40
+    # OpenAI-compatible endpoint capabilities. Self-hosted gateways
+    # (OneAPI/NewAPI/LiteLLM/vLLM/Ollama) vary in what they support,
+    # so defaults are conservative; LlmClient auto-downgrades on 400.
+    use_json_mode: bool = False
+    parallel_tool_calls: bool = False

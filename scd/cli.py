@@ -36,12 +36,14 @@ def main() -> None:
 @click.option("-f", "--format", "fmt", type=click.Choice(["markdown", "json"]), default="markdown", help="Output format.")
 @click.option("-r", "--rps", default=3.0, type=float, help="Max requests per second to the AI API.")
 @click.option("-t", "--threshold", default=20, type=int, help="Minimum composite similarity score (0-100, default 20).")
-@click.option("-m", "--model", default="claude-sonnet-4-20250514", help="Claude model to use.")
-@click.option("--api-key", envvar="ANTHROPIC_API_KEY", default=None, help="Anthropic API key (or set ANTHROPIC_API_KEY env var).")
-@click.option("--base-url", envvar="ANTHROPIC_BASE_URL", default=None, help="Anthropic API base URL (or set ANTHROPIC_BASE_URL env var).")
+@click.option("-m", "--model", default="gpt-4o-mini", help="LLM model name (OpenAI-compatible).")
+@click.option("--api-key", envvar="OPENAI_API_KEY", default=None, help="API key (or set OPENAI_API_KEY env var).")
+@click.option("--base-url", envvar="OPENAI_BASE_URL", default=None, help="OpenAI-compatible endpoint base URL, e.g. https://your-gateway/v1 (or set OPENAI_BASE_URL env var).")
 @click.option("--lang", default=None, help="Comma-separated language filter (e.g. py,ts).")
 @click.option("--shallow", is_flag=True, help="Only do directory-level matching (no function comparison).")
 @click.option("--match-batch-size", default=40, type=int, help="Max directories per side per Phase 2b AI call (default 40).")
+@click.option("--json-mode/--no-json-mode", default=None, help="Force response_format=json_object on 2b/3 (auto-downgrades if endpoint rejects).")
+@click.option("--parallel-tool-calls/--no-parallel-tool-calls", default=None, help="Allow parallel tool_calls in 2a (auto-downgrades if endpoint rejects).")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 def compare(
     repo_a: str,
@@ -57,6 +59,8 @@ def compare(
     lang: str | None,
     shallow: bool,
     match_batch_size: int,
+    json_mode: bool | None,
+    parallel_tool_calls: bool | None,
     verbose: bool,
 ) -> None:
     """Compare two repositories for code similarity."""
@@ -64,15 +68,27 @@ def compare(
 
     env = load_env_file()
     if not api_key:
-        api_key = env.get("ANTHROPIC_API_KEY")
+        api_key = env.get("OPENAI_API_KEY") or env.get("ANTHROPIC_API_KEY")
     if not base_url:
-        base_url = env.get("ANTHROPIC_BASE_URL")
-    if model == "claude-sonnet-4-20250514" and env.get("ANTHROPIC_MODEL"):
-        model = env["ANTHROPIC_MODEL"]
+        base_url = env.get("OPENAI_BASE_URL") or env.get("ANTHROPIC_BASE_URL")
+    if model == "gpt-4o-mini":
+        env_model = env.get("OPENAI_MODEL") or env.get("ANTHROPIC_MODEL")
+        if env_model:
+            model = env_model
     if rps == 3.0 and env.get("RPS"):
         rps = float(env["RPS"])
     if match_batch_size == 40 and env.get("MATCH_BATCH_SIZE"):
         match_batch_size = int(env["MATCH_BATCH_SIZE"])
+
+    def _parse_bool(raw: str | None) -> bool | None:
+        if raw is None:
+            return None
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    if json_mode is None:
+        json_mode = _parse_bool(env.get("USE_JSON_MODE")) or False
+    if parallel_tool_calls is None:
+        parallel_tool_calls = _parse_bool(env.get("PARALLEL_TOOL_CALLS")) or False
 
     lang_filter = set()
     if lang:
@@ -90,6 +106,8 @@ def compare(
         lang_filter=lang_filter,
         shallow=shallow,
         match_batch_size=match_batch_size,
+        use_json_mode=json_mode,
+        parallel_tool_calls=parallel_tool_calls,
     )
 
     try:

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from scd.ai.client import ClaudeClient
+from scd.ai.client import LlmClient
 from scd.ai.prompts import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
 from scd.models import DirMatch, DirMatchResult, RepoScanResult
 
@@ -212,7 +212,7 @@ async def _match_single_batch(
     repo_b: RepoScanResult,
     summaries_a: dict[str, str],
     summaries_b: dict[str, str],
-    client: ClaudeClient,
+    client: LlmClient,
 ) -> DirMatchResult:
     """Run one AI call over a pair of summary batches."""
     user_msg = DIRECTORY_MATCH_USER.format(
@@ -247,7 +247,7 @@ async def _match_in_batches(
     repo_b: RepoScanResult,
     summaries_a: dict[str, str],
     summaries_b: dict[str, str],
-    client: ClaudeClient,
+    client: LlmClient,
     batch_size: int,
 ) -> DirMatchResult:
     """Run p*q concurrent batch calls and merge results into a one-to-one mapping."""
@@ -288,7 +288,7 @@ async def match_directories(
     repo_b: RepoScanResult,
     summaries_a: dict[str, str],
     summaries_b: dict[str, str],
-    client: ClaudeClient,
+    client: LlmClient,
     batch_size: int = 40,
 ) -> DirMatchResult:
     """Match directories between two repos using their pre-generated summaries.
