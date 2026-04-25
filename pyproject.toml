@@ -23,3 +23,6 @@ scd = "scd.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["scd*"]
+
+[tool.setuptools.package-data]
+"scd.vendor.tiktoken" = ["*"]

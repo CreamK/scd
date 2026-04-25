@@ -74,11 +74,26 @@ _PLACEHOLDER_SUMMARY = json.dumps(
 
 _ENCODER: tiktoken.Encoding | None = None
 
+# Vendored tiktoken BPE cache so we don't have to hit
+# openaipublic.blob.core.windows.net at runtime. The filename is the SHA1 of
+# the download URL tiktoken would otherwise use.
+_VENDORED_TIKTOKEN_DIR = Path(__file__).resolve().parents[1] / "vendor" / "tiktoken"
+
 
 def _get_encoder() -> tiktoken.Encoding:
-    """Lazy module-level encoder singleton."""
+    """Lazy module-level encoder singleton.
+
+    Points ``TIKTOKEN_CACHE_DIR`` at our vendored cache before loading so the
+    encoder is initialized fully offline. An explicit user-set
+    ``TIKTOKEN_CACHE_DIR`` wins.
+    """
     global _ENCODER
     if _ENCODER is None:
+        if (
+            "TIKTOKEN_CACHE_DIR" not in os.environ
+            and _VENDORED_TIKTOKEN_DIR.is_dir()
+        ):
+            os.environ["TIKTOKEN_CACHE_DIR"] = str(_VENDORED_TIKTOKEN_DIR)
         _ENCODER = tiktoken.get_encoding(TIKTOKEN_ENCODING)
     return _ENCODER
 
