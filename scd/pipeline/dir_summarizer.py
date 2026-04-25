@@ -1,9 +1,11 @@
 """Hierarchical directory summarizer with caching.
 
 Generates AI summaries bottom-up: leaf directories first, parent directories
-after. The LLM is given `list_dir` / `read_file` tools scoped to each
-directory's subtree and must reach a minimum file-read coverage before its
-final JSON is accepted.
+after. For each directory, the LLM is given a ``read_file`` tool scoped to
+the directory's **direct** files only, and the already-produced summaries
+of its direct child directories are passed inline in the user prompt. The
+LLM must read every direct file before its final JSON is accepted; child
+directories are not inspected (their summaries are treated as authoritative).
 """
 
 from __future__ import annotations
@@ -32,9 +34,8 @@ PROMPT_VERSION = 1
 COMPACTION_RATIO = 2
 COMPACTION_MIN_LINES = 20
 
-COVERAGE_THRESHOLD = 0.7
-SMALL_DIR_FORCE_FULL = 3
-BASE_MAX_TOOL_TURNS = 20
+COVERAGE_THRESHOLD = 1.0
+BASE_MAX_TOOL_TURNS = 100
 FOLLOW_UP_TOP_K_BUFFER = 2
 UNREAD_HINT_MAX = 15
 
@@ -233,10 +234,12 @@ def _get_direct_children(dir_path: str, all_dirs: dict[str, DirInfo]) -> list[st
 
 
 def _target_coverage_for(fs: SubtreeFS) -> float:
-    if fs.total_files == 0:
-        return 1.0
-    if fs.total_files <= SMALL_DIR_FORCE_FULL:
-        return 1.0
+    """Target coverage for a directory.
+
+    With the direct-files-only model, we always require the LLM to read
+    every direct file. ``SubtreeFS.coverage`` short-circuits to 1.0 when
+    ``total_files`` is 0, so empty directories pass without any read.
+    """
     return COVERAGE_THRESHOLD
 
 
@@ -278,11 +281,11 @@ def _build_follow_up(fs: SubtreeFS, target_coverage: float) -> str:
         else "(none)"
     )
     return (
-        f"Your file coverage is {fs.coverage:.0%} "
-        f"({len(fs.read_paths)}/{fs.total_files}). The required minimum is "
-        f"{target_coverage:.0%}. You MUST call read_file on additional files "
-        f"before giving the final JSON. Suggested unread files (largest first): "
-        f"{unread_hint}. After reading them, output ONLY the final JSON."
+        f"You have read {len(fs.read_paths)}/{fs.total_files} direct files "
+        f"({fs.coverage:.0%}). Every direct file in this directory must be "
+        f"read before the final JSON is accepted. Remaining unread direct "
+        f"files (largest first): {unread_hint}. Call read_file on them and "
+        f"then output ONLY the final JSON."
     )
 
 

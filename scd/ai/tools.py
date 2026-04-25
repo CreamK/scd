@@ -1,9 +1,11 @@
-"""In-memory read-only filesystem view for a directory subtree.
+"""In-memory read-only filesystem view for a single directory.
 
-Used by the tool-driven directory summarizer: the model receives `list_dir`
-and `read_file` tools scoped to a single subtree of the scanned repo, and the
-summarizer tracks which files were actually read to enforce a file-coverage
-threshold before accepting the final JSON.
+Used by the tool-driven directory summarizer: the model receives a
+``read_file`` tool scoped to the **direct** files of one directory, and the
+summarizer tracks which files were actually read to enforce full coverage
+before accepting the final JSON. Files in child directories are summarized
+separately (bottom-up) and passed to the LLM as text in the user prompt;
+this view never recurses into subtrees.
 """
 
 from __future__ import annotations
@@ -34,32 +36,33 @@ def _normalize(path: str) -> str | None:
 
 
 class SubtreeFS:
-    """Read-only view over the subtree rooted at ``root_rel`` of ``repo``.
+    """Read-only view over the **direct** files of ``root_rel`` in ``repo``.
 
-    - All tool paths are resolved relative to ``root_rel``.
-    - ``read_paths`` records the set of files first-read by the model, used
-      for coverage accounting.
+    The model can only read files directly inside ``root_rel`` via
+    ``read_file``; attempts to read files in child directories are
+    rejected. Child directories are summarized separately and their
+    summaries are provided as text in the user prompt.
+
+    - ``all_files`` lists only files in ``root_rel`` (not descendants).
+    - ``read_paths`` records the set of direct files first-read by the
+      model, used for coverage accounting (target = 100% of direct files).
+    - ``list_dir`` is retained for the summarizer's pre-computed inventory,
+      but is no longer exposed to the LLM as a tool.
     """
 
     def __init__(self, root_rel: str, repo: RepoScanResult) -> None:
         self._repo = repo
         self.root_rel = root_rel.strip("/").rstrip("/") if root_rel else ""
 
-        all_files: list[FileInfo] = []
-        all_dirs: list[str] = []
-        prefix = f"{self.root_rel}/" if self.root_rel else ""
-        for dir_path, dir_info in repo.dirs.items():
-            if self.root_rel:
-                if dir_path != self.root_rel and not dir_path.startswith(prefix):
-                    continue
-            all_dirs.append(dir_path)
-            for f in dir_info.files:
-                all_files.append(f)
-        self.all_files: list[FileInfo] = sorted(all_files, key=lambda f: f.path)
-        self.all_dirs: list[str] = sorted(all_dirs)
+        dir_info = repo.dirs.get(self.root_rel)
+        if dir_info is None:
+            self.all_files: list[FileInfo] = []
+        else:
+            self.all_files = sorted(dir_info.files, key=lambda f: f.path)
         self.total_files: int = len(self.all_files)
         self.total_lines: int = sum(f.line_count for f in self.all_files)
         self.read_paths: set[str] = set()
+        self._allowed_paths: set[str] = {f.path for f in self.all_files}
 
     @property
     def coverage(self) -> float:
@@ -91,7 +94,7 @@ class SubtreeFS:
     def list_dir(self, path: str = "") -> dict[str, Any]:
         target = self._resolve(path)
         if target is None:
-            return {"error": "path outside subtree"}
+            return {"error": "path outside directory"}
         if target not in self._repo.dirs:
             return {"error": f"directory not found: {path or '.'}"}
         dir_info = self._repo.dirs[target]
@@ -132,7 +135,16 @@ class SubtreeFS:
     ) -> dict[str, Any]:
         target = self._resolve(path)
         if target is None:
-            return {"error": "path outside subtree"}
+            return {"error": "path outside directory"}
+        if target not in self._allowed_paths:
+            return {
+                "error": (
+                    f"file not directly in this directory: {path}. "
+                    "You can only read direct files of the current "
+                    "directory; trust the provided child summaries for "
+                    "files in subdirectories."
+                )
+            }
         content = self._repo.file_contents.get(target)
         if content is None:
             return {"error": f"file not found: {path}"}
@@ -179,40 +191,24 @@ DIR_SUMMARY_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "list_dir",
-            "description": (
-                "List immediate subdirectories and source files of a directory "
-                "inside the current subtree. Paths are relative to the subtree "
-                "root. Use '.' or '' for the subtree root."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Directory path relative to the subtree root.",
-                    }
-                },
-                "required": [],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "read_file",
             "description": (
-                "Read a source file inside the current subtree. Returns at most "
-                f"{READ_FILE_DEFAULT_LIMIT} lines per call; use offset to paginate "
-                "if 'truncated' is true. Reading a file contributes to coverage."
+                "Read a source file directly inside the current directory. "
+                "Files in child directories cannot be read; trust the child "
+                "directory summaries provided in the user message instead. "
+                f"Returns at most {READ_FILE_DEFAULT_LIMIT} lines per call; "
+                "use offset to paginate if 'truncated' is true. Reading a "
+                "file (any page) counts once toward coverage."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to the subtree root.",
+                        "description": (
+                            "File name relative to the current directory "
+                            "(must be a direct file, not nested)."
+                        ),
                     },
                     "offset": {
                         "type": "integer",
