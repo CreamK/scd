@@ -9,6 +9,7 @@ from scd.ai.prompts.dir_summary import (
     DIR_SUMMARY_USER,
 )
 from scd.ai.prompts.directory_match import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
+from scd.ai.prompts.file_summary import FILE_SUMMARY_SYSTEM, FILE_SUMMARY_USER
 from scd.ai.prompts.function_compare import FUNCTION_COMPARE_SYSTEM, FUNCTION_COMPARE_USER
 
 __all__ = [
@@ -20,6 +21,8 @@ __all__ = [
     "DIR_SUMMARY_USER",
     "DIRECTORY_MATCH_SYSTEM",
     "DIRECTORY_MATCH_USER",
+    "FILE_SUMMARY_SYSTEM",
+    "FILE_SUMMARY_USER",
     "FUNCTION_COMPARE_SYSTEM",
     "FUNCTION_COMPARE_USER",
 ]

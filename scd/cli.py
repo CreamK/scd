@@ -42,6 +42,7 @@ def main() -> None:
 @click.option("--lang", default=None, help="Comma-separated language filter (e.g. py,ts).")
 @click.option("--shallow", is_flag=True, help="Only do directory-level matching (no function comparison).")
 @click.option("--match-batch-size", default=40, type=int, help="Max directories per side per Phase 2b AI call (default 40).")
+@click.option("--max-in-flight", envvar="SCD_MAX_IN_FLIGHT", default=8, type=int, help="Hard cap on concurrent LLM requests (default 8; or set SCD_MAX_IN_FLIGHT env var).")
 @click.option("--json-mode/--no-json-mode", default=None, help="Force response_format=json_object on 2b/3 (auto-downgrades if endpoint rejects).")
 @click.option("--parallel-tool-calls/--no-parallel-tool-calls", default=None, help="Allow parallel tool_calls in 2a (auto-downgrades if endpoint rejects).")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
@@ -59,6 +60,7 @@ def compare(
     lang: str | None,
     shallow: bool,
     match_batch_size: int,
+    max_in_flight: int,
     json_mode: bool | None,
     parallel_tool_calls: bool | None,
     verbose: bool,
@@ -79,6 +81,8 @@ def compare(
         rps = float(env["RPS"])
     if match_batch_size == 40 and env.get("MATCH_BATCH_SIZE"):
         match_batch_size = int(env["MATCH_BATCH_SIZE"])
+    if max_in_flight == 8 and env.get("MAX_IN_FLIGHT"):
+        max_in_flight = int(env["MAX_IN_FLIGHT"])
 
     def _parse_bool(raw: str | None) -> bool | None:
         if raw is None:
@@ -106,6 +110,7 @@ def compare(
         lang_filter=lang_filter,
         shallow=shallow,
         match_batch_size=match_batch_size,
+        max_in_flight=max_in_flight,
         use_json_mode=json_mode,
         parallel_tool_calls=parallel_tool_calls,
     )

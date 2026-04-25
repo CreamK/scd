@@ -62,6 +62,10 @@ class ScdConfig:
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
     match_batch_size: int = 40
+    # Hard cap on the number of LLM requests in flight at any time.
+    # Acts as an outer bound around the per-second `rps` limiter; useful for
+    # self-hosted gateways that can't handle large bursts even within budget.
+    max_in_flight: int = 8
     # OpenAI-compatible endpoint capabilities. Self-hosted gateways
     # (OneAPI/NewAPI/LiteLLM/vLLM/Ollama) vary in what they support,
     # so defaults are conservative; LlmClient auto-downgrades on 400.

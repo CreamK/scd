@@ -18,6 +18,7 @@ from scd.pipeline.directory_matcher import (
     match_directories,
     save_match_cache,
 )
+from scd.pipeline.file_summarizer import summarize_files
 from scd.pipeline.function_comparer import (
     PairCache,
     build_all_file_pairs,
@@ -75,17 +76,29 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         repo_b_files=repo_b.total_files,
     )
 
-    # --- Phase 2a: Generate directory summaries ---
-    console.print("\n[bold blue]Phase 2a:[/] Generating directory summaries...")
+    # --- Phase 2a-1: Per-file summaries (map step) ---
+    console.print("\n[bold blue]Phase 2a-1:[/] Generating file summaries...")
     t1 = time.monotonic()
 
-    summaries_a = await summarize_repo(repo_a, client, config.model)
+    file_summaries_a = await summarize_files(repo_a, client, config.model)
+    console.print(f"  Repo A: {len(file_summaries_a)} file summaries")
+
+    file_summaries_b = await summarize_files(repo_b, client, config.model)
+    console.print(f"  Repo B: {len(file_summaries_b)} file summaries")
+
+    console.print(f"  File summaries completed in {time.monotonic() - t1:.1f}s")
+
+    # --- Phase 2a-2: Directory summaries (reduce step) ---
+    console.print("\n[bold blue]Phase 2a-2:[/] Generating directory summaries...")
+    t1b = time.monotonic()
+
+    summaries_a = await summarize_repo(repo_a, client, config.model, file_summaries_a)
     console.print(f"  Repo A: {len(summaries_a)} directory summaries")
 
-    summaries_b = await summarize_repo(repo_b, client, config.model)
+    summaries_b = await summarize_repo(repo_b, client, config.model, file_summaries_b)
     console.print(f"  Repo B: {len(summaries_b)} directory summaries")
 
-    console.print(f"  Summaries completed in {time.monotonic() - t1:.1f}s")
+    console.print(f"  Directory summaries completed in {time.monotonic() - t1b:.1f}s")
 
     summaries_path = _write_summaries(output_dir, summaries_a, summaries_b)
     console.print(f"  Summaries saved to [bold]{summaries_path}[/]")

@@ -1,13 +1,18 @@
-# --- Directory Summary (direct-content, no tools) ---
+# --- Directory Summary (reduce step over file summaries) ---
+#
+# In the new pipeline the LLM never sees raw file content for directory
+# summarization. Instead it receives:
+# - the JSON summary of every direct file in the directory (already produced
+#   by the file-level map step), and
+# - the JSON summary of every direct child directory (already produced by
+#   earlier passes of this same step).
 #
 # Three prompt pairs:
-# - SINGLE-SHOT: when all direct file contents + child summaries fit in one
-#   request, a single LLM call produces the final summary.
-# - PARTIAL: when files don't fit, we bin-pack them into chunks; each chunk
-#   gets a partial summary in the same JSON schema, with no child_summaries
-#   context.
-# - MERGE: when partials exist, one final call merges them with the child
-#   summaries into the final JSON.
+# - SINGLE-SHOT: when all direct file summaries + child summaries fit in one
+#   request, produce the final JSON in one call.
+# - PARTIAL: when they don't fit, bin-pack file summaries into chunks; each
+#   chunk yields a partial JSON in the same schema, no child summaries.
+# - MERGE: combine N partials with the child summaries into the final JSON.
 
 _SCHEMA_BLOCK = """\
 {
@@ -21,18 +26,24 @@ _SCHEMA_BLOCK = """\
 # ---- single-shot --------------------------------------------------------
 
 DIR_SUMMARY_SYSTEM = f"""\
-You are a code analysis expert. You will analyze a single directory and produce a structured JSON summary.
+You are a code analysis expert. You will synthesize a structured JSON summary for a single directory.
 
 You will receive in the user message:
-- The full source of every file directly inside this directory, fenced by `----- FILE: ... -----` markers. (Very large files may have a head + tail with a `... [truncated N tokens] ...` marker in the middle.)
+- The pre-computed JSON summary of every direct file in this directory, fenced by `----- FILE SUMMARY: ... -----` markers. Each file summary already contains `purpose`, `exports`, `imports`, `frameworks`, `patterns`, and `key_snippets`.
 - The list of direct child directories.
-- Pre-computed summaries of each direct child directory (treat them as authoritative; you cannot inspect their files).
+- Pre-computed JSON summaries of each direct child directory (treat them as authoritative; you cannot inspect their files).
+
+You do NOT see any raw source code. Trust the file summaries: they are the only ground truth for files in this directory.
 
 Output ONLY one JSON object matching this schema, no prose, no markdown fences:
 
 {_SCHEMA_BLOCK}
 
-Synthesize the direct files (concrete evidence) with the child summaries (already-condensed downstream context) to fill `purpose`, `key_exports`, `frameworks`, `patterns`, and `children_overview`."""
+Synthesize across the file summaries and child summaries:
+- `purpose`: what this directory does as a whole, deduced from grouped file purposes and child-directory roles.
+- `key_exports`: deduplicate exports across all direct files; favor symbols that appear in multiple files or look central.
+- `frameworks` / `patterns`: union across files and children, deduplicated.
+- `children_overview`: synthesize the child-directory summaries into one sentence; use \"\" if there are no child directories."""
 
 DIR_SUMMARY_USER = """\
 Directory: {dir_path}
@@ -42,39 +53,39 @@ Direct child directories: {direct_dirs}
 Child directory summaries (already produced; treat as authoritative):
 {child_summaries}
 
-Direct files in this directory ({total_files} files, {total_lines} lines total):
+Direct file summaries ({total_files} files, {total_lines} lines total):
 
-{files_block}
+{file_summaries_block}
 
 Produce the final JSON summary for `{dir_path}` per the schema in the system prompt. Output ONLY the JSON object."""
 
-# ---- partial (one chunk of direct files) -------------------------------
+# ---- partial (one chunk of file summaries) -----------------------------
 
 DIR_SUMMARY_PARTIAL_SYSTEM = f"""\
-You are a code analysis expert. You will analyze a SUBSET of files from a directory and produce a partial structured JSON summary covering ONLY the files shown.
+You are a code analysis expert. You will synthesize a PARTIAL structured JSON summary covering a SUBSET of the file summaries from one directory.
 
 You will receive in the user message:
-- The full source of a subset of files from one directory, fenced by `----- FILE: ... -----` markers. (Very large files may have a head + tail with a `... [truncated N tokens] ...` marker in the middle.)
+- The pre-computed JSON summary of a subset of direct files from one directory, fenced by `----- FILE SUMMARY: ... -----` markers.
 - The directory path and which chunk this is (e.g. chunk 2 of 3).
 
-You are NOT shown other files in the directory or any child-directory summaries. Do not speculate about anything outside the files you see.
+You are NOT shown other files in the directory or any child-directory summaries. Do not speculate about anything outside the file summaries you see.
 
 Output ONLY one JSON object matching this schema, no prose, no markdown fences:
 
 {_SCHEMA_BLOCK}
 
-Scope each field to the files in this chunk:
+Scope each field to the file summaries in this chunk:
 - `purpose`: what these specific files do as a group.
-- `key_exports`: exports defined in these files.
+- `key_exports`: union of exports across these files (dedupe).
 - `frameworks` / `patterns`: those evidenced by these files.
 - `children_overview`: leave as the empty string \"\" (the merge step handles children)."""
 
 DIR_SUMMARY_PARTIAL_USER = """\
 Directory: {dir_path} (partial chunk {chunk_index} of {chunk_total})
 
-Files in this chunk ({chunk_files} files, {chunk_lines} lines):
+File summaries in this chunk ({chunk_files} files, {chunk_lines} lines):
 
-{files_block}
+{file_summaries_block}
 
 Produce the partial JSON summary covering ONLY these files. Output ONLY the JSON object."""
 
@@ -84,7 +95,7 @@ DIR_SUMMARY_MERGE_SYSTEM = f"""\
 You are merging multiple partial directory summaries into one final summary.
 
 You will receive in the user message:
-- N partial JSON summaries, each covering a different subset of the direct files of one directory.
+- N partial JSON summaries, each derived from a different subset of the file summaries of one directory.
 - The list of direct child directories.
 - The pre-computed summaries of each direct child directory (authoritative).
 
@@ -105,7 +116,7 @@ Direct child directories: {direct_dirs}
 Child directory summaries (already produced; treat as authoritative):
 {child_summaries}
 
-Partial summaries of the direct files ({chunk_total} chunks):
+Partial summaries derived from the file summaries ({chunk_total} chunks):
 {partial_summaries}
 
 Produce the FINAL merged JSON summary for `{dir_path}`. Output ONLY the JSON object."""

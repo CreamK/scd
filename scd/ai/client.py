@@ -51,7 +51,12 @@ class LlmClient:
         self._client = AsyncOpenAI(**kwargs)
         self._model = config.model
         self._rate_limiter = AsyncLimiter(max_rate=config.rps, time_period=1.0)
-        logger.info("Rate limiter: rps=%.1f", config.rps)
+        max_in_flight = max(1, int(getattr(config, "max_in_flight", 8) or 8))
+        self._inflight = asyncio.Semaphore(max_in_flight)
+        logger.info(
+            "Rate limiter: rps=%.1f, max_in_flight=%d",
+            config.rps, max_in_flight,
+        )
         self.total_calls = 0
         self._lock = asyncio.Lock()
         # Capability flags. Start from user config; auto-downgrade on 400.
@@ -101,7 +106,7 @@ class LlmClient:
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
-                async with self._rate_limiter:
+                async with self._inflight, self._rate_limiter:
                     kwargs: dict[str, Any] = {
                         "model": self._model,
                         "messages": messages,
