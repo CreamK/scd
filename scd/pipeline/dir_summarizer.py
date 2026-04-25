@@ -1,11 +1,12 @@
 """Hierarchical directory summarizer with caching.
 
 Generates AI summaries bottom-up: leaf directories first, parent directories
-after. For each directory, the LLM is given a ``read_file`` tool scoped to
-the directory's **direct** files only, and the already-produced summaries
-of its direct child directories are passed inline in the user prompt. The
-LLM must read every direct file before its final JSON is accepted; child
-directories are not inspected (their summaries are treated as authoritative).
+after. For each directory we feed the LLM the **full source** of every direct
+file together with the already-produced summaries of direct child directories
+in a single prompt - no tool-use loop. When the combined size exceeds the
+context budget we bin-pack files into chunks, produce one partial summary per
+chunk, then run a final merge call that combines partials with child
+summaries into the final JSON.
 """
 
 from __future__ import annotations
@@ -14,15 +15,22 @@ import asyncio
 import hashlib
 import json
 import logging
-import math
 import os
 from pathlib import Path
 from typing import Any
 
+import tiktoken
+
 from scd.ai.client import LlmClient
-from scd.ai.prompts import DIR_SUMMARY_SYSTEM, DIR_SUMMARY_USER
-from scd.ai.tools import DIR_SUMMARY_TOOLS, SubtreeFS
-from scd.models import DirInfo, RepoScanResult
+from scd.ai.prompts import (
+    DIR_SUMMARY_MERGE_SYSTEM,
+    DIR_SUMMARY_MERGE_USER,
+    DIR_SUMMARY_PARTIAL_SYSTEM,
+    DIR_SUMMARY_PARTIAL_USER,
+    DIR_SUMMARY_SYSTEM,
+    DIR_SUMMARY_USER,
+)
+from scd.models import DirInfo, FileInfo, RepoScanResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +42,19 @@ PROMPT_VERSION = 1
 COMPACTION_RATIO = 2
 COMPACTION_MIN_LINES = 20
 
-COVERAGE_THRESHOLD = 1.0
-BASE_MAX_TOOL_TURNS = 100
-FOLLOW_UP_TOP_K_BUFFER = 2
-UNREAD_HINT_MAX = 15
+# Token budget (assumes a 128k-context model; override here if needed).
+MAX_CONTEXT_TOKENS = 128_000
+OUTPUT_RESERVE_TOKENS = 4_096
+SAFETY_MARGIN_TOKENS = 3_000
+PROMPT_OVERHEAD_TOKENS = 2_000
+INPUT_BUDGET_TOKENS = (
+    MAX_CONTEXT_TOKENS
+    - OUTPUT_RESERVE_TOKENS
+    - SAFETY_MARGIN_TOKENS
+    - PROMPT_OVERHEAD_TOKENS
+)
+MAX_SINGLE_FILE_TOKENS = 60_000
+TIKTOKEN_ENCODING = "cl100k_base"
 
 _PLACEHOLDER_SUMMARY = json.dumps(
     {
@@ -51,10 +68,59 @@ _PLACEHOLDER_SUMMARY = json.dumps(
 )
 
 
+# --------------------------------------------------------------------------
+# Token utilities
+# --------------------------------------------------------------------------
+
+_ENCODER: tiktoken.Encoding | None = None
+
+
+def _get_encoder() -> tiktoken.Encoding:
+    """Lazy module-level encoder singleton."""
+    global _ENCODER
+    if _ENCODER is None:
+        _ENCODER = tiktoken.get_encoding(TIKTOKEN_ENCODING)
+    return _ENCODER
+
+
+def _count_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return len(_get_encoder().encode(text, disallowed_special=()))
+
+
+def _truncate_head_tail(text: str, max_tokens: int) -> tuple[str, bool]:
+    """Truncate ``text`` to roughly ``max_tokens`` tokens, keeping head + tail.
+
+    Returns ``(new_text, was_truncated)``. If the input already fits, the
+    original string is returned unchanged.
+    """
+    if max_tokens <= 0 or not text:
+        return text, False
+    enc = _get_encoder()
+    tokens = enc.encode(text, disallowed_special=())
+    if len(tokens) <= max_tokens:
+        return text, False
+    half = max(1, max_tokens // 2)
+    head = enc.decode(tokens[:half])
+    tail = enc.decode(tokens[-half:])
+    dropped = len(tokens) - 2 * half
+    marker = f"\n\n... [truncated {dropped} tokens] ...\n\n"
+    return head + marker + tail, True
+
+
+# --------------------------------------------------------------------------
+# Cache + tree helpers (unchanged behaviour)
+# --------------------------------------------------------------------------
+
+
 def compute_subtree_hash(dir_path: str, repo: RepoScanResult) -> str:
     """Hash every file (path + content) inside the subtree rooted at dir_path.
 
-    Any change to any descendant file invalidates the cached summary.
+    Any change to any descendant file invalidates the cached summary. The
+    parent directory's summary depends transitively on its child summaries,
+    which in turn depend on their own subtrees, so a subtree hash is the
+    correct invalidation key for the parent as well.
     """
     h = hashlib.sha256()
     h.update(f"v{SUMMARY_CACHE_VERSION}|prompt={PROMPT_VERSION}".encode())
@@ -233,32 +299,15 @@ def _get_direct_children(dir_path: str, all_dirs: dict[str, DirInfo]) -> list[st
     return sorted(result)
 
 
-def _target_coverage_for(fs: SubtreeFS) -> float:
-    """Target coverage for a directory.
-
-    With the direct-files-only model, we always require the LLM to read
-    every direct file. ``SubtreeFS.coverage`` short-circuits to 1.0 when
-    ``total_files`` is 0, so empty directories pass without any read.
-    """
-    return COVERAGE_THRESHOLD
+# --------------------------------------------------------------------------
+# Prompt formatting helpers
+# --------------------------------------------------------------------------
 
 
-def _target_files_for(fs: SubtreeFS, target_coverage: float) -> int:
-    if fs.total_files == 0:
-        return 0
-    return max(1, math.ceil(fs.total_files * target_coverage))
-
-
-def _format_inventory_dirs(dirs: list[str]) -> str:
+def _format_direct_dirs(dirs: list[str]) -> str:
     if not dirs:
         return "(none)"
     return ", ".join(dirs)
-
-
-def _format_inventory_files(files: list[dict[str, Any]]) -> str:
-    if not files:
-        return "(none)"
-    return ", ".join(f"{f['path']} ({f['language']}, {f['line_count']} lines)" for f in files)
 
 
 def _format_child_summaries(child_summaries: dict[str, str]) -> str:
@@ -270,23 +319,138 @@ def _format_child_summaries(child_summaries: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _build_follow_up(fs: SubtreeFS, target_coverage: float) -> str:
-    target_files = _target_files_for(fs, target_coverage)
-    still_needed = max(0, target_files - len(fs.read_paths))
-    top_k = still_needed + FOLLOW_UP_TOP_K_BUFFER
-    unread = fs.unread_files_ranked()[:top_k]
-    unread_hint = (
-        ", ".join(f"{f.path} ({f.line_count} lines)" for f in unread)
-        if unread
-        else "(none)"
-    )
+def _format_file_block(path: str, language: str, line_count: int, content: str) -> str:
+    """Render one file as a fenced block for inclusion in user prompts."""
     return (
-        f"You have read {len(fs.read_paths)}/{fs.total_files} direct files "
-        f"({fs.coverage:.0%}). Every direct file in this directory must be "
-        f"read before the final JSON is accepted. Remaining unread direct "
-        f"files (largest first): {unread_hint}. Call read_file on them and "
-        f"then output ONLY the final JSON."
+        f"----- FILE: {path} ({language}, {line_count} lines) -----\n"
+        f"{content}\n"
+        f"----- END FILE -----"
     )
+
+
+def _format_files_block(prepared: list["_PreparedFile"]) -> str:
+    if not prepared:
+        return "(no direct files in this directory)"
+    return "\n\n".join(
+        _format_file_block(p.display_path, p.language, p.line_count, p.text)
+        for p in prepared
+    )
+
+
+def _format_partial_summaries(partials: list[str]) -> str:
+    if not partials:
+        return "(none)"
+    blocks: list[str] = []
+    for i, summary in enumerate(partials, 1):
+        blocks.append(f"[Chunk {i}]\n{summary}")
+    return "\n\n".join(blocks)
+
+
+# --------------------------------------------------------------------------
+# Direct file preparation + chunking
+# --------------------------------------------------------------------------
+
+
+class _PreparedFile:
+    """A direct file ready to be embedded into a prompt."""
+
+    __slots__ = (
+        "path",
+        "display_path",
+        "language",
+        "line_count",
+        "text",
+        "tokens",
+        "truncated",
+    )
+
+    def __init__(
+        self,
+        *,
+        path: str,
+        display_path: str,
+        language: str,
+        line_count: int,
+        text: str,
+        tokens: int,
+        truncated: bool,
+    ) -> None:
+        self.path = path
+        self.display_path = display_path
+        self.language = language
+        self.line_count = line_count
+        self.text = text
+        self.tokens = tokens
+        self.truncated = truncated
+
+
+def _prepare_direct_files(
+    dir_path: str, repo: RepoScanResult,
+) -> tuple[list[_PreparedFile], list[str]]:
+    """Read content for each direct file of ``dir_path`` and pre-tokenize.
+
+    Files larger than ``MAX_SINGLE_FILE_TOKENS`` are head + tail truncated.
+    Returns ``(prepared_files, truncated_paths)``.
+    """
+    dir_info = repo.dirs.get(dir_path)
+    files: list[FileInfo] = list(dir_info.files) if dir_info is not None else []
+    files.sort(key=lambda f: f.path)
+
+    prefix = f"{dir_path}/" if dir_path else ""
+    prepared: list[_PreparedFile] = []
+    truncated_paths: list[str] = []
+
+    for f in files:
+        raw = repo.file_contents.get(f.path, "") or ""
+        text, was_trunc = _truncate_head_tail(raw, MAX_SINGLE_FILE_TOKENS)
+        tokens = _count_tokens(text)
+        display_path = f.path[len(prefix):] if (prefix and f.path.startswith(prefix)) else f.path
+        prepared.append(_PreparedFile(
+            path=f.path,
+            display_path=display_path,
+            language=f.language,
+            line_count=f.line_count,
+            text=text,
+            tokens=tokens,
+            truncated=was_trunc,
+        ))
+        if was_trunc:
+            truncated_paths.append(f.path)
+
+    return prepared, truncated_paths
+
+
+def _bin_pack_by_tokens(
+    items: list[_PreparedFile], budget: int,
+) -> list[list[_PreparedFile]]:
+    """First-fit decreasing bin-packing by ``tokens``.
+
+    Items larger than ``budget`` get their own bin (truncation should have
+    prevented this, but we don't drop content silently).
+    """
+    sorted_items = sorted(items, key=lambda x: x.tokens, reverse=True)
+    bins: list[list[_PreparedFile]] = []
+    sizes: list[int] = []
+    for item in sorted_items:
+        placed = False
+        for i, size in enumerate(sizes):
+            if size + item.tokens <= budget:
+                bins[i].append(item)
+                sizes[i] += item.tokens
+                placed = True
+                break
+        if not placed:
+            bins.append([item])
+            sizes.append(item.tokens)
+    # Stabilize order inside each bin by path for deterministic prompts.
+    for b in bins:
+        b.sort(key=lambda x: x.display_path)
+    return bins
+
+
+# --------------------------------------------------------------------------
+# Single-directory summarization
+# --------------------------------------------------------------------------
 
 
 async def _summarize_dir(
@@ -295,74 +459,149 @@ async def _summarize_dir(
     child_summaries: dict[str, str],
     client: LlmClient,
 ) -> tuple[str, dict[str, Any]]:
-    """Summarize a single directory using tool-use with a coverage validator.
+    """Summarize a single directory by feeding direct file contents to the LLM.
 
-    Returns (summary_json_str, stats_dict).
+    Returns ``(summary_json_str, stats_dict)``. Picks single-shot when
+    everything fits into the input budget, otherwise bin-packs into chunks
+    and runs a partial-then-merge flow.
     """
-    fs = SubtreeFS(root_rel=dir_path, repo=repo)
-    target_coverage = _target_coverage_for(fs)
-    target_files = _target_files_for(fs, target_coverage)
+    prepared, truncated_paths = _prepare_direct_files(dir_path, repo)
+    total_files = len(prepared)
+    total_lines = sum(p.line_count for p in prepared)
+    file_tokens = sum(p.tokens for p in prepared)
 
-    max_tool_turns = max(BASE_MAX_TOOL_TURNS, target_files + 5)
+    direct_children = _get_direct_children(dir_path, repo.dirs)
+    direct_dirs_txt = _format_direct_dirs(direct_children)
+    child_summaries_txt = _format_child_summaries(child_summaries)
+    child_summaries_tokens = _count_tokens(child_summaries_txt)
 
-    inventory = fs.list_dir("")
-    direct_dirs_txt = _format_inventory_dirs(inventory.get("dirs", []) or [])
-    direct_files_txt = _format_inventory_files(inventory.get("files", []) or [])
-
-    user_msg = DIR_SUMMARY_USER.format(
-        dir_path=dir_path or "(root)",
-        direct_dirs=direct_dirs_txt,
-        direct_files=direct_files_txt,
-        total_files=fs.total_files,
-        total_lines=fs.total_lines,
-        child_summaries=_format_child_summaries(child_summaries),
-    )
-
-    async def tool_handler(name: str, tool_input: dict[str, Any]) -> Any:
-        if name == "list_dir":
-            return fs.list_dir(tool_input.get("path", "") or "")
-        if name == "read_file":
-            return fs.read_file(
-                tool_input.get("path", "") or "",
-                offset=tool_input.get("offset", 0) or 0,
-                limit=tool_input.get("limit", None),
-            )
-        return {"error": f"unknown tool: {name}"}
-
-    def validator(_result: dict) -> tuple[bool, str | None]:
-        if fs.coverage >= target_coverage - 1e-9:
-            return True, None
-        return False, _build_follow_up(fs, target_coverage)
+    if child_summaries_tokens > INPUT_BUDGET_TOKENS // 2:
+        logger.warning(
+            "Child summaries for %s are unusually large (%d tokens); "
+            "merge prompt may be tight against the context window",
+            dir_path or "(root)", child_summaries_tokens,
+        )
 
     stats: dict[str, Any] = {
-        "coverage": None,
-        "files_read": 0,
-        "total_files": fs.total_files,
-        "target_coverage": target_coverage,
+        "coverage": 1.0,
+        "files_read": total_files,
+        "total_files": total_files,
+        "chunks": 1,
+        "truncated_files": truncated_paths,
+        "tokens_input": file_tokens + child_summaries_tokens,
     }
 
+    single_shot_total = file_tokens + child_summaries_tokens
+    fits_single_shot = single_shot_total <= INPUT_BUDGET_TOKENS
+
     try:
-        result = await client.ask_json_with_tools(
-            system=DIR_SUMMARY_SYSTEM,
-            user=user_msg,
-            tools=DIR_SUMMARY_TOOLS,
-            tool_handler=tool_handler,
-            max_tool_turns=max_tool_turns,
-            validator=validator,
-        )
-        stats["coverage"] = fs.coverage
-        stats["files_read"] = len(fs.read_paths)
+        if fits_single_shot:
+            result = await _single_shot(
+                dir_path=dir_path,
+                prepared=prepared,
+                total_files=total_files,
+                total_lines=total_lines,
+                direct_dirs_txt=direct_dirs_txt,
+                child_summaries_txt=child_summaries_txt,
+                client=client,
+            )
+        else:
+            chunks = _bin_pack_by_tokens(prepared, INPUT_BUDGET_TOKENS)
+            stats["chunks"] = len(chunks)
+            result = await _chunked_merge(
+                dir_path=dir_path,
+                chunks=chunks,
+                direct_dirs_txt=direct_dirs_txt,
+                child_summaries_txt=child_summaries_txt,
+                client=client,
+            )
         return json.dumps(result, ensure_ascii=False), stats
     except Exception as e:
         logger.error(
-            "Failed to summarize dir %s (coverage=%.0f%%, %d/%d files read): %s",
-            dir_path or "(root)", fs.coverage * 100,
-            len(fs.read_paths), fs.total_files, e,
+            "Failed to summarize dir %s (%d direct files, %d tokens): %s",
+            dir_path or "(root)", total_files, single_shot_total, e,
         )
-        stats["coverage"] = fs.coverage if fs.total_files else None
-        stats["files_read"] = len(fs.read_paths)
         stats["error"] = f"{type(e).__name__}: {e}"
         return _PLACEHOLDER_SUMMARY, stats
+
+
+async def _single_shot(
+    *,
+    dir_path: str,
+    prepared: list[_PreparedFile],
+    total_files: int,
+    total_lines: int,
+    direct_dirs_txt: str,
+    child_summaries_txt: str,
+    client: LlmClient,
+) -> dict:
+    user_msg = DIR_SUMMARY_USER.format(
+        dir_path=dir_path or "(root)",
+        direct_dirs=direct_dirs_txt,
+        child_summaries=child_summaries_txt,
+        total_files=total_files,
+        total_lines=total_lines,
+        files_block=_format_files_block(prepared),
+    )
+    return await client.ask_json(system=DIR_SUMMARY_SYSTEM, user=user_msg)
+
+
+async def _chunked_merge(
+    *,
+    dir_path: str,
+    chunks: list[list[_PreparedFile]],
+    direct_dirs_txt: str,
+    child_summaries_txt: str,
+    client: LlmClient,
+) -> dict:
+    chunk_total = len(chunks)
+    partial_coros = [
+        _partial_for_chunk(
+            dir_path=dir_path,
+            chunk=chunk,
+            chunk_index=i + 1,
+            chunk_total=chunk_total,
+            client=client,
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+    partial_results = await asyncio.gather(*partial_coros)
+
+    merge_user = DIR_SUMMARY_MERGE_USER.format(
+        dir_path=dir_path or "(root)",
+        direct_dirs=direct_dirs_txt,
+        child_summaries=child_summaries_txt,
+        chunk_total=chunk_total,
+        partial_summaries=_format_partial_summaries(partial_results),
+    )
+    return await client.ask_json(system=DIR_SUMMARY_MERGE_SYSTEM, user=merge_user)
+
+
+async def _partial_for_chunk(
+    *,
+    dir_path: str,
+    chunk: list[_PreparedFile],
+    chunk_index: int,
+    chunk_total: int,
+    client: LlmClient,
+) -> str:
+    chunk_files = len(chunk)
+    chunk_lines = sum(p.line_count for p in chunk)
+    user_msg = DIR_SUMMARY_PARTIAL_USER.format(
+        dir_path=dir_path or "(root)",
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+        chunk_files=chunk_files,
+        chunk_lines=chunk_lines,
+        files_block=_format_files_block(chunk),
+    )
+    result = await client.ask_json(system=DIR_SUMMARY_PARTIAL_SYSTEM, user=user_msg)
+    return json.dumps(result, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------
+# Repo-wide orchestration
+# --------------------------------------------------------------------------
 
 
 async def summarize_repo(
@@ -372,8 +611,8 @@ async def summarize_repo(
 ) -> dict[str, str]:
     """Generate hierarchical summaries for all directories in a repo.
 
-    Returns {dir_relative_path: summary_json_string}.
-    Uses cache to skip directories whose subtree hasn't changed.
+    Returns ``{dir_relative_path: summary_json_string}``. Uses a per-subtree
+    content hash to skip directories whose subtree hasn't changed.
     """
     cache = SummaryCache(repo.root_path, model)
     loaded = cache.load()
@@ -398,6 +637,9 @@ async def summarize_repo(
                     "coverage": cached_entry.get("coverage"),
                     "files_read": cached_entry.get("files_read", 0),
                     "total_files": cached_entry.get("total_files", 0),
+                    "chunks": cached_entry.get("chunks", 1),
+                    "truncated_files": cached_entry.get("truncated_files", []),
+                    "tokens_input": cached_entry.get("tokens_input"),
                     "cached": True,
                 }
                 cache_hits += 1
@@ -433,35 +675,23 @@ async def summarize_repo(
                 "coverage": stats.get("coverage"),
                 "files_read": stats.get("files_read", 0),
                 "total_files": stats.get("total_files", 0),
+                "chunks": stats.get("chunks", 1),
+                "truncated_files": stats.get("truncated_files", []),
+                "tokens_input": stats.get("tokens_input"),
             })
 
-            coverage = stats.get("coverage")
-            coverage_txt = f"{coverage:.0%}" if isinstance(coverage, (int, float)) else "n/a"
+            chunks = stats.get("chunks", 1)
+            chunk_suffix = "" if chunks == 1 else f", chunked: {chunks}+1 calls"
+            trunc = stats.get("truncated_files") or []
+            trunc_suffix = "" if not trunc else f", truncated: {trunc}"
             logger.info(
-                "summarized %s: read %d/%d files (%s)",
+                "summarized %s: %d direct files, %s tokens%s%s",
                 dir_path or "(root)",
-                stats.get("files_read", 0),
                 stats.get("total_files", 0),
-                coverage_txt,
+                stats.get("tokens_input", "?"),
+                chunk_suffix,
+                trunc_suffix,
             )
-
-    coverages = [
-        s["coverage"] for s in dir_stats.values()
-        if isinstance(s.get("coverage"), (int, float))
-    ]
-    below = [
-        d for d, s in dir_stats.items()
-        if isinstance(s.get("coverage"), (int, float))
-        and s["coverage"] < COVERAGE_THRESHOLD
-        and s.get("total_files", 0) > 0
-    ]
-    if coverages:
-        logger.info(
-            "coverage stats: min=%.0f%%, avg=%.0f%%, below-threshold dirs=%s",
-            min(coverages) * 100,
-            (sum(coverages) / len(coverages)) * 100,
-            [d or "(root)" for d in below],
-        )
 
     logger.info(
         "Summarized %d directories: %d generated, %d from cache",

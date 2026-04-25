@@ -1,10 +1,21 @@
 """Prompt templates for AI calls."""
 
-from scd.ai.prompts.dir_summary import DIR_SUMMARY_SYSTEM, DIR_SUMMARY_USER
+from scd.ai.prompts.dir_summary import (
+    DIR_SUMMARY_MERGE_SYSTEM,
+    DIR_SUMMARY_MERGE_USER,
+    DIR_SUMMARY_PARTIAL_SYSTEM,
+    DIR_SUMMARY_PARTIAL_USER,
+    DIR_SUMMARY_SYSTEM,
+    DIR_SUMMARY_USER,
+)
 from scd.ai.prompts.directory_match import DIRECTORY_MATCH_SYSTEM, DIRECTORY_MATCH_USER
 from scd.ai.prompts.function_compare import FUNCTION_COMPARE_SYSTEM, FUNCTION_COMPARE_USER
 
 __all__ = [
+    "DIR_SUMMARY_MERGE_SYSTEM",
+    "DIR_SUMMARY_MERGE_USER",
+    "DIR_SUMMARY_PARTIAL_SYSTEM",
+    "DIR_SUMMARY_PARTIAL_USER",
     "DIR_SUMMARY_SYSTEM",
     "DIR_SUMMARY_USER",
     "DIRECTORY_MATCH_SYSTEM",

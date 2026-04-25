@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -89,119 +88,6 @@ class LlmClient:
                     "content": "Your previous response was not valid JSON. "
                     "Please respond with ONLY valid JSON, no markdown fences, no explanation.",
                 })
-
-    async def ask_json_with_tools(
-        self,
-        system: str,
-        user: str,
-        tools: list[dict],
-        tool_handler: Callable[[str, dict], Awaitable[Any]],
-        *,
-        max_tool_turns: int = 20,
-        validator: Callable[[dict], tuple[bool, str | None]] | None = None,
-        max_tokens: int = 8192,
-    ) -> dict:
-        """Tool-use loop using OpenAI Chat Completions tool_calls protocol.
-
-        - Each chat.completions.create call counts against max_tool_turns.
-        - tool_handler must return something JSON-serializable; it will be
-          wrapped into a role="tool" message.
-        - Raises RuntimeError when max_tool_turns is exhausted without a
-          validated final answer.
-        """
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
-
-        for turn in range(max_tool_turns):
-            resp = await self._chat(
-                messages,
-                max_tokens=max_tokens,
-                tools=tools,
-                want_json=False,
-            )
-            choice = resp.choices[0]
-            msg = choice.message
-            finish = choice.finish_reason
-            tool_calls = getattr(msg, "tool_calls", None) or []
-
-            if finish == "tool_calls" or tool_calls:
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": c.id,
-                            "type": "function",
-                            "function": {
-                                "name": c.function.name,
-                                "arguments": c.function.arguments or "{}",
-                            },
-                        }
-                        for c in tool_calls
-                    ],
-                })
-                for c in tool_calls:
-                    name = c.function.name
-                    raw_args = c.function.arguments or "{}"
-                    try:
-                        args = json.loads(raw_args)
-                        if not isinstance(args, dict):
-                            args = {}
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "Tool %s had invalid JSON arguments: %s",
-                            name, raw_args[:200],
-                        )
-                        args = {}
-                    try:
-                        result = await tool_handler(name, args)
-                    except Exception as e:
-                        logger.warning("tool_handler(%s) raised: %s", name, e)
-                        result = {"error": f"{type(e).__name__}: {e}"}
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": c.id,
-                        "name": name,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
-                continue
-
-            text = msg.content or ""
-            try:
-                result = self._extract_json(text)
-            except (json.JSONDecodeError, ValueError):
-                if turn + 1 >= max_tool_turns:
-                    raise
-                logger.warning(
-                    "JSON parse failed on tool-use final turn (%d/%d), asking model to fix",
-                    turn + 1, max_tool_turns,
-                )
-                messages.append({"role": "assistant", "content": text})
-                messages.append({
-                    "role": "user",
-                    "content": "Your previous response was not valid JSON. "
-                    "Respond with ONLY valid JSON, no markdown fences, no explanation.",
-                })
-                continue
-
-            if validator is None:
-                return result
-            ok, follow_up = validator(result)
-            if ok:
-                return result
-            messages.append({"role": "assistant", "content": text})
-            messages.append({
-                "role": "user",
-                "content": follow_up
-                or "Your previous answer was rejected. Please revise and output final JSON.",
-            })
-
-        raise RuntimeError(
-            f"ask_json_with_tools exhausted max_tool_turns={max_tool_turns} "
-            "without a validated final answer"
-        )
 
     async def _chat(
         self,
