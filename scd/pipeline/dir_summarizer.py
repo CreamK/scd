@@ -42,18 +42,23 @@ PROMPT_VERSION = 1
 COMPACTION_RATIO = 2
 COMPACTION_MIN_LINES = 20
 
-# Token budget (assumes a 128k-context model; override here if needed).
+# Token budget (assumes a 128k-context model). We deliberately cap usable
+# input at 96k (75% of the physical window) to stay safe against:
+# - cross-tokenizer skew (cl100k_base vs whatever the deployed model uses,
+#   typically +5-10% on code/CJK content),
+# - implicit chat-template / schema overhead on the server side,
+# - quality degradation ("lost in the middle") on long-context models.
 MAX_CONTEXT_TOKENS = 128_000
-OUTPUT_RESERVE_TOKENS = 4_096
-SAFETY_MARGIN_TOKENS = 3_000
-PROMPT_OVERHEAD_TOKENS = 2_000
+OUTPUT_RESERVE_TOKENS = 8_192        # matches ask_json(max_tokens=8192)
+SAFETY_MARGIN_TOKENS = 16_808        # ~14% of the context; covers tokenizer skew + gateway slack
+PROMPT_OVERHEAD_TOKENS = 7_000       # system prompt + JSON schema + file markers + child summaries
 INPUT_BUDGET_TOKENS = (
     MAX_CONTEXT_TOKENS
     - OUTPUT_RESERVE_TOKENS
     - SAFETY_MARGIN_TOKENS
     - PROMPT_OVERHEAD_TOKENS
-)
-MAX_SINGLE_FILE_TOKENS = 60_000
+)  # = 96_000
+MAX_SINGLE_FILE_TOKENS = 32_000      # head + tail each ~16k; ~1/3 of the input budget
 TIKTOKEN_ENCODING = "cl100k_base"
 
 _PLACEHOLDER_SUMMARY = json.dumps(

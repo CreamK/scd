@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 5
 JSON_PARSE_RETRIES = 2
 INITIAL_BACKOFF = 3.0
-API_TIMEOUT_SECONDS = 180.0
+API_TIMEOUT_SECONDS = 300.0
 
 
 class LlmClient:
