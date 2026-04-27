@@ -28,7 +28,15 @@ Similarity levels based on composite score:
 
 Rules:
 - Only report pairs with composite score >= {threshold}.
-- Be precise with line numbers.
+- Source code is provided with explicit line-number prefixes in the form `   N | <code>`,
+  where N is the authoritative 1-based line number. ALWAYS read line numbers directly
+  from this prefix when filling `line_start` / `line_end`. NEVER count lines yourself.
+- `line_start` is the line of the function's signature/header (e.g. the `def`, `func`,
+  or `<return-type> name(...)` line, not a preceding decorator/comment/blank line).
+  `line_end` is the line of the function's last body line or closing brace. Both
+  bounds are inclusive.
+- The `name` field MUST be an identifier that actually appears in the corresponding
+  file. Do not invent or rename functions.
 - If no similar functions are found, return an empty similar_functions array.
 - Evaluate based on actual code logic and semantics, not superficial text similarity.
 

@@ -161,6 +161,22 @@ class PairCache:
         return self._path
 
 
+def _annotate_with_line_numbers(code: str) -> str:
+    """Prefix every line with its 1-based line number for LLM consumption.
+
+    The resulting format is ``"%Nd | <line>"`` where N auto-scales to the file
+    length (minimum 5). Giving the model authoritative line numbers up front
+    avoids the well-known failure mode of LLMs miscounting lines in long files,
+    which is the dominant source of bogus ``line_start``/``line_end`` values in
+    similar-function output.
+    """
+    if not code:
+        return code
+    lines = code.splitlines()
+    width = max(5, len(str(len(lines))))
+    return "\n".join(f"{i:>{width}} | {line}" for i, line in enumerate(lines, 1))
+
+
 def _iter_subtree_files(repo: RepoScanResult, dir_path: str) -> list[str]:
     """Collect paths of every source file under `dir_path` (inclusive, recursive).
 
@@ -275,7 +291,8 @@ async def _compare_file_pair(
     system = FUNCTION_COMPARE_SYSTEM.format(threshold=threshold)
     user = FUNCTION_COMPARE_USER.format(
         file_a=file_a, file_b=file_b,
-        code_a=code_a, code_b=code_b,
+        code_a=_annotate_with_line_numbers(code_a),
+        code_b=_annotate_with_line_numbers(code_b),
     )
 
     try:
