@@ -1,1 +1,223 @@
-# scd
+# SCD
+
+SCD（Similar Code Detector）是一个基于 AI 的代码相似度检测工具，用来比较两个代码仓库在目录结构、文件职责和函数实现上的相似性。
+
+它适合用于代码复用审查、疑似重复实现排查、迁移项目对比、外包交付验收，或在大型仓库之间快速定位可能存在相似逻辑的代码。
+
+## 功能特点
+
+- 扫描两个仓库中的源代码文件，并自动忽略常见构建产物、依赖目录和测试数据。
+- 使用 LLM 为文件和目录生成摘要，再匹配语义上相近的目录。
+- 对匹配目录中的文件进行函数级相似度分析。
+- 从数据结构、函数签名、算法逻辑、命名习惯、协议一致性等维度给出综合评分。
+- 支持 Markdown 和 JSON 报告输出。
+- 支持 OpenAI-compatible API，可接入 OpenAI、OneAPI、NewAPI、LiteLLM、vLLM、Ollama 等兼容网关。
+- 支持断点缓存和中间产物输出，便于长任务恢复和结果排查。
+
+## 安装
+
+需要 Python 3.11 或更高版本。
+
+```bash
+git clone <this-repo-url>
+cd SCD
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+安装完成后可以使用 `scd` 命令：
+
+```bash
+scd --help
+scd compare --help
+```
+
+## 配置
+
+SCD 会读取项目根目录下的 `.scd.env`。可以从示例文件复制一份：
+
+```bash
+cp .scd.env.example .scd.env
+```
+
+最小配置：
+
+```env
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
+```
+
+如果使用兼容网关，将 `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 改为对应服务的地址和模型名即可。
+
+可选配置：
+
+```env
+RPS=3.0
+MATCH_BATCH_SIZE=40
+USE_JSON_MODE=false
+PARALLEL_TOOL_CALLS=false
+```
+
+其中：
+
+- `RPS`：限制每秒请求数，避免触发 API 限流。
+- `MATCH_BATCH_SIZE`：目录匹配阶段每批传给模型的目录数量。
+- `USE_JSON_MODE`：是否强制使用 `response_format=json_object`。
+- `PARALLEL_TOOL_CALLS`：是否允许并行 tool calls。
+
+这些能力在不同兼容网关上的支持程度不同；默认保持保守配置，客户端会在部分不支持的场景下自动降级。
+
+## 快速开始
+
+比较两个本地仓库：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b
+```
+
+默认结果会写入 `output/`：
+
+```text
+output/
+  report.md
+  dir_summaries.json
+  compared_pairs.txt
+  pair_cache.json
+```
+
+生成 JSON 报告：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --format json
+```
+
+指定输出目录：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --output-dir reports/run-001
+```
+
+只做目录级匹配，不进入函数比较：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --shallow
+```
+
+只扫描指定语言：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --lang py,ts,tsx
+```
+
+提高相似度阈值，只保留更相似的结果：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --threshold 60
+```
+
+## 常用参数
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `repo_a` | 必填 | 第一个待比较仓库路径 |
+| `repo_b` | 必填 | 第二个待比较仓库路径 |
+| `-o, --output` | 自动生成 | 指定报告文件路径，会覆盖默认输出路径 |
+| `--output-dir` | `output` | 中间产物和报告输出目录 |
+| `-f, --format` | `markdown` | 输出格式，支持 `markdown` 或 `json` |
+| `-r, --rps` | `3.0` | AI API 每秒最大请求数 |
+| `-t, --threshold` | `20` | 最低综合相似度分数，范围 0-100 |
+| `-m, --model` | `gpt-4o-mini` | 使用的 LLM 模型名 |
+| `--api-key` | 环境变量 | API key，也可通过 `OPENAI_API_KEY` 设置 |
+| `--base-url` | 环境变量 | OpenAI-compatible API 地址 |
+| `--lang` | 不限制 | 逗号分隔的语言过滤器，例如 `py,ts` |
+| `--shallow` | 关闭 | 只做目录匹配，不做函数级比较 |
+| `--match-batch-size` | `40` | 目录匹配阶段的批大小 |
+| `--max-in-flight` | `8` | 同时进行中的 LLM 请求上限 |
+| `--json-mode` / `--no-json-mode` | 自动/关闭 | 是否启用 JSON mode |
+| `--parallel-tool-calls` / `--no-parallel-tool-calls` | 自动/关闭 | 是否启用并行 tool calls |
+| `-v, --verbose` | 关闭 | 输出详细日志和异常堆栈 |
+
+## 输出说明
+
+Markdown 报告默认为 `output/report.md`，主要包含：
+
+- Overview：两个仓库的文件数量、AI 调用次数、相似函数对数量。
+- Similarity Distribution：高、中、低、极低相似度的分布。
+- Directory Matches：AI 判断相近的目录对及原因。
+- Similar Functions：按综合评分排序的相似函数详情。
+
+函数相似度会按以下维度评分：
+
+- Data Structure：数据结构是否相近。
+- Function Signature：函数签名和参数设计是否相近。
+- Algorithm Logic：核心算法和控制流是否相近。
+- Naming Convention：命名习惯是否相近。
+- Protocol Conformance：协议、接口或行为约定是否相近。
+
+中间产物说明：
+
+- `dir_summaries.json`：两个仓库的目录摘要，便于检查目录匹配依据。
+- `compared_pairs.txt`：实际进入函数比较的文件对。
+- `pair_cache.json`：函数比较缓存，用于长任务恢复。
+- `report.md` / `report.json`：最终报告。
+
+## 工作流程
+
+SCD 的比较流程分为四个阶段：
+
+1. 扫描仓库：收集支持的源代码文件，并应用默认忽略规则。
+2. 生成摘要：先为文件生成摘要，再聚合为目录摘要。
+3. 匹配目录：用目录摘要判断两个仓库中职责相近的目录。
+4. 比较函数：在匹配目录内构建文件对，进行函数级相似度分析并生成报告。
+
+默认支持的源码类型包括 Python、TypeScript、JavaScript、Go、Java、Rust、C/C++、C#、Ruby、PHP、Swift、Kotlin、Scala、Vue、Svelte 等。
+
+默认会忽略 `.git`、`node_modules`、`vendor`、`build`、`dist`、`target`、虚拟环境、缓存目录、测试目录和常见 lock 文件。
+
+## 项目结构
+
+```text
+scd/
+  ai/          LLM 客户端和提示词
+  pipeline/    扫描后各阶段的编排、摘要、目录匹配和函数比较
+  reporter/    Markdown / JSON 报告生成
+  scanner/     仓库扫描和忽略规则
+  cli.py       命令行入口
+  config.py    配置和默认规则
+  models.py    核心数据模型
+```
+
+## 本地开发
+
+安装开发环境：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+运行 CLI：
+
+```bash
+python -m scd compare /path/to/repo-a /path/to/repo-b -v
+```
+
+也可以直接使用安装后的命令：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b -v
+```
+
+## 使用建议
+
+- 首次运行建议使用较低的 `RPS` 和默认 `--max-in-flight`，确认网关稳定后再提高并发。
+- 大仓库可以先用 `--shallow` 查看目录匹配是否合理，再运行完整函数比较。
+- 使用 `--lang` 缩小扫描范围，可以显著减少 AI 调用量。
+- 如果兼容网关不支持 JSON mode 或 parallel tool calls，保持默认关闭即可。
+
+## 注意事项
+
+SCD 的结果依赖 LLM 判断，适合辅助定位相似代码，不应作为唯一结论。对于高相似度结果，建议结合报告中的文件路径、行号、评分维度和分析文本进行人工复核。
