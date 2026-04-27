@@ -207,7 +207,7 @@ class SummaryCache:
         if not self._path.exists():
             return 0
         malformed = 0
-        mismatched = 0
+        version_mismatched = 0
         with self._path.open("r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
                 line = line.strip()
@@ -223,10 +223,7 @@ class SummaryCache:
                     )
                     continue
                 if data.get("v") != SUMMARY_CACHE_VERSION:
-                    mismatched += 1
-                    continue
-                if data.get("model") != self._model:
-                    mismatched += 1
+                    version_mismatched += 1
                     continue
                 dir_path = data.get("dir")
                 if dir_path is None:
@@ -236,10 +233,10 @@ class SummaryCache:
                 self._raw_lines += 1
         if malformed:
             logger.warning("%d malformed lines skipped in %s", malformed, self._path)
-        if mismatched:
+        if version_mismatched:
             logger.info(
-                "Ignored %d cache lines with stale version/model in %s",
-                mismatched, self._path,
+                "Ignored %d cache lines with stale version in %s",
+                version_mismatched, self._path,
             )
         if (
             self._raw_lines > COMPACTION_RATIO * max(len(self._store), 1)

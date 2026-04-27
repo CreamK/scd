@@ -6,8 +6,8 @@ characteristic snippets. These per-file summaries are then consumed by the
 directory-level reduce step (see ``scd.pipeline.dir_summarizer``).
 
 Summaries are cached by `content_hash` in ``.scd_cache/file_summaries.jsonl``,
-so identical contents (across files within one repo or across runs) only
-ever get summarized once per (model, prompt) pair.
+so identical contents (across files within one repo or across runs) can be
+reused across models for the same cache/prompt version.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class FileSummaryCache:
         if not self._path.exists():
             return 0
         malformed = 0
-        mismatched = 0
+        version_mismatched = 0
         with self._path.open("r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
                 line = line.strip()
@@ -112,10 +112,7 @@ class FileSummaryCache:
                     )
                     continue
                 if data.get("v") != FILE_SUMMARY_CACHE_VERSION:
-                    mismatched += 1
-                    continue
-                if data.get("model") != self._model:
-                    mismatched += 1
+                    version_mismatched += 1
                     continue
                 key = data.get("hash")
                 if not key:
@@ -128,10 +125,10 @@ class FileSummaryCache:
                 "%d malformed file-summary lines skipped in %s",
                 malformed, self._path,
             )
-        if mismatched:
+        if version_mismatched:
             logger.info(
-                "Ignored %d file-summary cache lines with stale version/model in %s",
-                mismatched, self._path,
+                "Ignored %d file-summary cache lines with stale version in %s",
+                version_mismatched, self._path,
             )
         if (
             self._raw_lines > COMPACTION_RATIO * max(len(self._store), 1)
