@@ -221,11 +221,15 @@ def _passes_implementation_similarity_gate(
     if composite_score < threshold:
         return False
 
-    return (
-        scores.data_structure >= IMPLEMENTATION_CORE_MIN_SCORE
-        and scores.algorithm_logic >= IMPLEMENTATION_CORE_MIN_SCORE
-        and scores.naming_convention >= IMPLEMENTATION_CORE_MIN_SCORE
+    weak_core_dimensions = sum(
+        score < IMPLEMENTATION_CORE_MIN_SCORE
+        for score in (
+            scores.data_structure,
+            scores.algorithm_logic,
+            scores.naming_convention,
+        )
     )
+    return weak_core_dimensions < 2
 
 
 def _parse_similar_functions(

@@ -53,6 +53,30 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].func_a.name, "normalize_user")
 
+    def test_keeps_pair_when_only_one_core_dimension_is_below_gate(self) -> None:
+        data = {
+            "similar_functions": [
+                {
+                    "func_a": {"name": "normalize_user", "line_start": 3, "line_end": 18},
+                    "func_b": {"name": "normalize_user", "line_start": 8, "line_end": 23},
+                    "scores": {
+                        "data_structure": 35,
+                        "function_signature": 70,
+                        "algorithm_logic": 74,
+                        "naming_convention": 80,
+                        "protocol_conformance": 50,
+                    },
+                    "composite_score": 66,
+                    "similarity_level": "high",
+                    "analysis": "One core dimension is weaker, but the implementation still has enough visible overlap.",
+                }
+            ]
+        }
+
+        results = _parse_similar_functions(data, "a.py", "b.py", threshold=20)
+
+        self.assertEqual(len(results), 1)
+
     def test_filters_pair_below_configured_threshold(self) -> None:
         data = {
             "similar_functions": [

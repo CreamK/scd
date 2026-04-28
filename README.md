@@ -158,7 +158,7 @@ Markdown 报告默认为 `output/report.md`，主要包含：
 - Naming Convention：变量、常量、辅助函数等具体标识符是否相近，并且是否以相似角色被使用。
 - Protocol Conformance：协议、接口或行为约定是否相近；这是辅助证据，不能单独让功能相似的代码被判为相似。
 
-阶段 3 还会对核心维度做本地过滤：Data Structure、Algorithm Logic、Naming Convention 任一维度过低时，即使综合分达到阈值，也不会输出为相似函数。
+阶段 3 还会对核心维度做本地过滤：Data Structure、Algorithm Logic、Naming Convention 中任意两项过低时，即使综合分达到阈值，也不会输出为相似函数。
 
 中间产物说明：
 
