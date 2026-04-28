@@ -148,13 +148,17 @@ Markdown 报告默认为 `output/report.md`，主要包含：
 - Directory Matches：AI 判断相近的目录对及原因。
 - Similar Functions：按综合评分排序的相似函数详情。
 
+函数相似度偏向判断“实现是否像”，不是只判断功能是否相同。只有当数据结构、代码形态、变量/命名使用和控制流程都能在代码层面对齐时，才会进入相似函数结果；如果只是高层功能类似、协议类似或解决同一个问题，但字段、变量名、数据流和写法明显不同，会被过滤掉。
+
 函数相似度会按以下维度评分：
 
-- Data Structure：数据结构是否相近。
-- Function Signature：函数签名和参数设计是否相近。
-- Algorithm Logic：核心算法和控制流是否相近。
-- Naming Convention：命名习惯是否相近。
-- Protocol Conformance：协议、接口或行为约定是否相近。
+- Data Structure：函数里使用的数据结构、字段名、对象/字典键、集合形态是否相近。
+- Function Signature：函数名、参数名、参数顺序、类型和返回值是否相近。
+- Algorithm Logic：语句顺序、分支循环、关键操作、变量读写和调用链是否能按代码块对齐。
+- Naming Convention：变量、常量、辅助函数等具体标识符是否相近，并且是否以相似角色被使用。
+- Protocol Conformance：协议、接口或行为约定是否相近；这是辅助证据，不能单独让功能相似的代码被判为相似。
+
+阶段 3 还会对核心维度做本地过滤：Data Structure、Algorithm Logic、Naming Convention 任一维度过低时，即使综合分达到阈值，也不会输出为相似函数。
 
 中间产物说明：
 

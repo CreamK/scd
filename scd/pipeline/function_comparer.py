@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 PAIR_CACHE_DIR_NAME = ".scd_cache"
 PAIR_CACHE_FILE_NAME = "pair_results.jsonl"
 PAIR_CACHE_VERSION = 1
+IMPLEMENTATION_CORE_MIN_SCORE = 45
 
 
 def compute_pair_key(
@@ -211,7 +212,28 @@ def _build_file_pairs(
     return list(product(files_a, files_b))
 
 
-def _parse_similar_functions(data: dict, file_a: str, file_b: str) -> list[SimilarFunction]:
+def _passes_implementation_similarity_gate(
+    scores: DimensionScores,
+    composite_score: int,
+    threshold: int,
+) -> bool:
+    """Require visible implementation overlap, not only functional equivalence."""
+    if composite_score < threshold:
+        return False
+
+    return (
+        scores.data_structure >= IMPLEMENTATION_CORE_MIN_SCORE
+        and scores.algorithm_logic >= IMPLEMENTATION_CORE_MIN_SCORE
+        and scores.naming_convention >= IMPLEMENTATION_CORE_MIN_SCORE
+    )
+
+
+def _parse_similar_functions(
+    data: dict,
+    file_a: str,
+    file_b: str,
+    threshold: int = 20,
+) -> list[SimilarFunction]:
     """Parse AI response into SimilarFunction objects."""
     results: list[SimilarFunction] = []
     for item in data.get("similar_functions", []):
@@ -236,7 +258,7 @@ def _parse_similar_functions(data: dict, file_a: str, file_b: str) -> list[Simil
             except ValueError:
                 level = SimilarityLevel.VERY_LOW
 
-            results.append(SimilarFunction(
+            similar = SimilarFunction(
                 func_a=FuncLocation(
                     file=file_a,
                     name=fa.get("name", "unknown"),
@@ -253,7 +275,20 @@ def _parse_similar_functions(data: dict, file_a: str, file_b: str) -> list[Simil
                 similarity_level=level,
                 scores=scores,
                 analysis=item.get("analysis", ""),
-            ))
+            )
+            if _passes_implementation_similarity_gate(scores, composite, threshold):
+                results.append(similar)
+            else:
+                logger.debug(
+                    "Filtered function pair %s <-> %s: composite=%d, "
+                    "data_structure=%d, algorithm_logic=%d, naming_convention=%d",
+                    similar.func_a.name,
+                    similar.func_b.name,
+                    composite,
+                    scores.data_structure,
+                    scores.algorithm_logic,
+                    scores.naming_convention,
+                )
         except (KeyError, TypeError, ValueError) as e:
             logger.warning("Failed to parse similar function entry: %s", e)
     return results
@@ -297,7 +332,7 @@ async def _compare_file_pair(
 
     try:
         data = await client.ask_json(system, user)
-        similar = _parse_similar_functions(data, file_a, file_b)
+        similar = _parse_similar_functions(data, file_a, file_b, threshold)
         result = CompareResult(file_a=file_a, file_b=file_b, similar_functions=similar)
         if cache is not None and cache_key is not None:
             await cache.put(cache_key, result)
