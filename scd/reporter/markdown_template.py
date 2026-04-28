@@ -1,6 +1,44 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scd.models import ScdReport, SimilarFunction, SimilarityLevel
+
+
+def extract_code_snippet(repo_root: str, file_path: str, line_start: int, line_end: int) -> str:
+    """Extract a line-numbered code snippet from a report file location."""
+    if line_start < 1 or line_end < line_start:
+        return ""
+
+    root = Path(repo_root).resolve()
+    source = (root / file_path).resolve()
+    try:
+        source.relative_to(root)
+    except ValueError:
+        return ""
+
+    try:
+        lines = source.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+
+    start_idx = line_start - 1
+    end_idx = min(line_end, len(lines))
+    if start_idx >= len(lines) or start_idx >= end_idx:
+        return ""
+
+    width = max(len(str(end_idx)), len(str(line_start)))
+    return "\n".join(
+        f"{line_no:>{width}} | {lines[line_no - 1]}"
+        for line_no in range(line_start, end_idx + 1)
+    )
+
+
+def _fenced_text_block(text: str) -> str:
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}text\n{text}\n{fence}"
 
 
 def _level_badge(level: SimilarityLevel) -> str:
@@ -72,12 +110,12 @@ def render_markdown(report: ScdReport) -> str:
 
     lines.append("## Similar Functions (sorted by composite score)\n")
     for sf in sorted_funcs:
-        _render_function_pair(lines, sf)
+        _render_function_pair(lines, sf, report)
 
     return "\n".join(lines)
 
 
-def _render_function_pair(lines: list[str], sf: SimilarFunction) -> None:
+def _render_function_pair(lines: list[str], sf: SimilarFunction, report: ScdReport) -> None:
     badge = _level_badge(sf.similarity_level)
     lines.append(f"### {badge} — `{sf.func_a.name}` ↔ `{sf.func_b.name}` (Composite: {sf.composite_score}%)\n")
     lines.append(f"- **Level:** {_level_label(sf.similarity_level)}")
@@ -95,3 +133,26 @@ def _render_function_pair(lines: list[str], sf: SimilarFunction) -> None:
     lines.append("")
     lines.append(f"- **Analysis:** {sf.analysis}")
     lines.append("")
+
+    code_a = extract_code_snippet(
+        report.repo_a_path,
+        sf.func_a.file,
+        sf.func_a.line_start,
+        sf.func_a.line_end,
+    )
+    code_b = extract_code_snippet(
+        report.repo_b_path,
+        sf.func_b.file,
+        sf.func_b.line_start,
+        sf.func_b.line_end,
+    )
+    if code_a:
+        lines.append("**Code A:**")
+        lines.append("")
+        lines.append(_fenced_text_block(code_a))
+        lines.append("")
+    if code_b:
+        lines.append("**Code B:**")
+        lines.append("")
+        lines.append(_fenced_text_block(code_b))
+        lines.append("")
