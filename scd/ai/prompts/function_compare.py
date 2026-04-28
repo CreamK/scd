@@ -36,9 +36,8 @@ Similarity levels based on composite score:
 
 Rules:
 - Only report pairs with composite score >= {threshold}.
-- Also check data_structure, algorithm_logic, and naming_convention against 45.
-  If two or more of those three scores are below 45, do not report the pair
-  regardless of composite score.
+- Also require data_structure >= 45 and algorithm_logic >= 45.
+  If either score is below 45, do not report the pair regardless of composite score.
 - Source code is provided with explicit line-number prefixes in the form `   N | <code>`,
   where N is the authoritative 1-based line number. ALWAYS read line numbers directly
   from this prefix when filling `line_start` / `line_end`. NEVER count lines yourself.

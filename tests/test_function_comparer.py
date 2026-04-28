@@ -53,7 +53,7 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].func_a.name, "normalize_user")
 
-    def test_keeps_pair_when_only_one_core_dimension_is_below_gate(self) -> None:
+    def test_filters_pair_when_data_structure_is_below_gate(self) -> None:
         data = {
             "similar_functions": [
                 {
@@ -68,7 +68,29 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
                     },
                     "composite_score": 66,
                     "similarity_level": "high",
-                    "analysis": "One core dimension is weaker, but the implementation still has enough visible overlap.",
+                    "analysis": "The data shapes do not line up well enough.",
+                }
+            ]
+        }
+
+        self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
+
+    def test_keeps_pair_when_only_naming_convention_is_below_gate(self) -> None:
+        data = {
+            "similar_functions": [
+                {
+                    "func_a": {"name": "normalize_user", "line_start": 3, "line_end": 18},
+                    "func_b": {"name": "clean_record", "line_start": 8, "line_end": 23},
+                    "scores": {
+                        "data_structure": 70,
+                        "function_signature": 50,
+                        "algorithm_logic": 74,
+                        "naming_convention": 20,
+                        "protocol_conformance": 50,
+                    },
+                    "composite_score": 64,
+                    "similarity_level": "high",
+                    "analysis": "The data structures and implementation flow align despite different names.",
                 }
             ]
         }
