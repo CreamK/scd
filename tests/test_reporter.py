@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from scd.models import (
     SimilarityLevel,
 )
 from scd.reporter.markdown_template import extract_code_snippet, render_markdown
-from scd.reporter.reporter import save_json
+from scd.reporter.reporter import save_json, save_reports
 
 
 def _similar_function() -> SimilarFunction:
@@ -96,7 +97,101 @@ class ReporterCodeSnippetTests(unittest.TestCase):
             self.assertIn("3 | def normalize_user(user):", markdown)
             self.assertIn("5 |     return {'name': name}", markdown)
 
-    def test_json_report_includes_code_for_both_functions(self) -> None:
+    def test_json_report_uses_review_array_with_html_context_and_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            repo_a = Path(tmp_a)
+            repo_b = Path(tmp_b)
+            (repo_a / "src").mkdir()
+            (repo_b / "lib").mkdir()
+            content_a = (
+                "far_before = 0\n"
+                + "".join(f"before_a_{i} = {i}\n" for i in range(1, 23))
+                + "def normalize_user(user):\n"
+                "    name = user['name'].strip()\n"
+                "    return {'name': name, 'tag': '<admin>'}\n"
+                + "".join(f"after_a_{i} = {i}\n" for i in range(1, 23))
+                + "far_after = 99\n"
+            )
+            content_b = (
+                "far_before = 0\n"
+                + "".join(f"before_b_{i} = {i}\n" for i in range(1, 24))
+                + "def normalize_user(user):\n"
+                "    name = user['name'].strip()\n"
+                "    return {'name': name, 'tag': '<admin>'}\n"
+                + "".join(f"after_b_{i} = {i}\n" for i in range(1, 23))
+                + "far_after = 99\n"
+            )
+            (repo_a / "src" / "a.py").write_text(content_a, encoding="utf-8")
+            (repo_b / "lib" / "b.py").write_text(content_b, encoding="utf-8")
+            report = ScdReport(
+                repo_a_path=str(repo_a),
+                repo_b_path=str(repo_b),
+                repo_a_files=1,
+                repo_b_files=1,
+                compare_results=[
+                    CompareResult(
+                        "src/a.py",
+                        "lib/b.py",
+                        [
+                            SimilarFunction(
+                                func_a=FuncLocation(
+                                    file="src/a.py",
+                                    name="normalize_user",
+                                    line_start=24,
+                                    line_end=26,
+                                ),
+                                func_b=FuncLocation(
+                                    file="lib/b.py",
+                                    name="normalize_user",
+                                    line_start=25,
+                                    line_end=27,
+                                ),
+                                composite_score=82,
+                                similarity_level=SimilarityLevel.HIGH,
+                                scores=DimensionScores(
+                                    data_structure=80,
+                                    function_signature=80,
+                                    algorithm_logic=85,
+                                    naming_convention=83,
+                                    protocol_conformance=50,
+                                ),
+                                analysis="The implementations line up closely.",
+                            )
+                        ],
+                    )
+                ],
+            )
+            out = repo_a / "report.json"
+
+            save_json(report, str(out))
+
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertIsInstance(data, list)
+            self.assertEqual(len(data), 1)
+            pair = data[0]
+            self.assertEqual(
+                set(pair),
+                {"huawei_file", "Linux_file", "html_context", "reason", "severity", "hash"},
+            )
+            self.assertEqual(pair["huawei_file"], "src/a.py")
+            self.assertEqual(pair["Linux_file"], "lib/b.py")
+            self.assertEqual(pair["reason"], "The implementations line up closely.")
+            self.assertEqual(pair["severity"], "high")
+            self.assertEqual(
+                pair["hash"],
+                hashlib.sha256((content_a + content_b).encode("utf-8")).hexdigest(),
+            )
+            self.assertIn('class="scd-side scd-side-left"', pair["html_context"])
+            self.assertIn('class="scd-highlight"', pair["html_context"])
+            self.assertIn("background-color:#ffe4e6;", pair["html_context"])
+            self.assertIn("background-color:#dcfce7;", pair["html_context"])
+            self.assertIn("def normalize_user(user):", pair["html_context"])
+            self.assertIn("&lt;admin&gt;", pair["html_context"])
+            self.assertIn("before_a_3 = 3", pair["html_context"])
+            self.assertNotIn("far_before = 0", pair["html_context"])
+            self.assertNotIn("far_after = 99", pair["html_context"])
+
+    def test_save_reports_writes_markdown_and_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
             repo_a = Path(tmp_a)
             repo_b = Path(tmp_b)
@@ -105,16 +200,14 @@ class ReporterCodeSnippetTests(unittest.TestCase):
             (repo_a / "src" / "a.py").write_text(
                 "x = 1\n"
                 "def normalize_user(user):\n"
-                "    name = user['name'].strip()\n"
-                "    return {'name': name}\n",
+                "    return user\n",
                 encoding="utf-8",
             )
             (repo_b / "lib" / "b.py").write_text(
                 "x = 1\n"
                 "y = 2\n"
                 "def normalize_user(user):\n"
-                "    name = user['name'].strip()\n"
-                "    return {'name': name}\n",
+                "    return user\n",
                 encoding="utf-8",
             )
             report = ScdReport(
@@ -124,14 +217,13 @@ class ReporterCodeSnippetTests(unittest.TestCase):
                 repo_b_files=1,
                 compare_results=[CompareResult("src/a.py", "lib/b.py", [_similar_function()])],
             )
-            out = repo_a / "report.json"
+            md_path = repo_a / "report.md"
+            json_path = repo_a / "report.json"
 
-            save_json(report, str(out))
+            save_reports(report, str(md_path), str(json_path))
 
-            data = json.loads(out.read_text(encoding="utf-8"))
-            pair = data["compare_results"][0]["similar_functions"][0]
-            self.assertIn("2 | def normalize_user(user):", pair["func_a"]["code"])
-            self.assertIn("3 | def normalize_user(user):", pair["func_b"]["code"])
+            self.assertIn("# SCD - Code Similarity Report", md_path.read_text(encoding="utf-8"))
+            self.assertIsInstance(json.loads(json_path.read_text(encoding="utf-8")), list)
 
 
 if __name__ == "__main__":

@@ -56,7 +56,6 @@ class ScdConfig:
     similarity_threshold: int = 20
     max_file_lines: int = 10000
     model: str = "gpt-4o-mini"
-    output_format: str = "markdown"
     output_path: str | None = None
     output_dir: str = "output"
     lang_filter: set[str] = field(default_factory=set)

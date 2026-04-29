@@ -82,16 +82,13 @@ scd compare /path/to/repo-a /path/to/repo-b
 ```text
 output/
   report.md
+  report.json
   dir_summaries.json
   compared_pairs.txt
   pair_cache.json
 ```
 
-生成 JSON 报告：
-
-```bash
-scd compare /path/to/repo-a /path/to/repo-b --format json
-```
+默认会同时生成 Markdown 报告和 JSON 对比报告，不需要指定输出格式。
 
 指定输出目录：
 
@@ -123,9 +120,8 @@ scd compare /path/to/repo-a /path/to/repo-b --threshold 60
 | --- | --- | --- |
 | `repo_a` | 必填 | 第一个待比较仓库路径 |
 | `repo_b` | 必填 | 第二个待比较仓库路径 |
-| `-o, --output` | 自动生成 | 指定报告文件路径，会覆盖默认输出路径 |
+| `-o, --output` | 自动生成 | 指定 Markdown 报告文件路径，JSON 报告使用同名 `.json` 路径 |
 | `--output-dir` | `output` | 中间产物和报告输出目录 |
-| `-f, --format` | `markdown` | 输出格式，支持 `markdown` 或 `json` |
 | `-r, --rps` | `3.0` | AI API 每秒最大请求数 |
 | `-t, --threshold` | `20` | 最低综合相似度分数，范围 0-100 |
 | `-m, --model` | `gpt-4o-mini` | 使用的 LLM 模型名 |
@@ -147,6 +143,8 @@ Markdown 报告默认为 `output/report.md`，主要包含：
 - Similarity Distribution：高、中、低、极低相似度的分布。
 - Directory Matches：AI 判断相近的目录对及原因。
 - Similar Functions：按综合评分排序的相似函数详情，包含文件路径、行号和对应源码片段。
+
+JSON 对比报告默认为 `output/report.json`，每个相似函数对一条记录，包含第一个仓库文件路径、第二个仓库文件路径、函数前后 20 行左右对比高亮 HTML、AI 判断理由、相似严重级别和两文件内容 hash。
 
 函数相似度偏向判断“实现是否像”，不是只判断功能是否相同。只有当数据结构、代码形态、变量/命名使用和控制流程都能在代码层面对齐时，才会进入相似函数结果；如果只是高层功能类似、协议类似或解决同一个问题，但字段、变量名、数据流和写法明显不同，会被过滤掉。
 

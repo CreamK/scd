@@ -25,7 +25,7 @@ from scd.pipeline.function_comparer import (
     compare_file_pairs,
     deduplicate_results,
 )
-from scd.reporter.reporter import save_report
+from scd.reporter.reporter import save_reports
 from scd.scanner.repo_scanner import scan_repo
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,12 @@ def _write_compared_pairs(output_dir: str, file_pairs: list[tuple[str, str]]) ->
     lines = [f"{fa} -> {fb}" for fa, fb in file_pairs]
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def _report_paths(output_dir: str, output_path: str | None) -> tuple[str, str]:
+    markdown_path = output_path or os.path.join(output_dir, "report.md")
+    json_path = str(Path(markdown_path).with_suffix(".json"))
+    return markdown_path, json_path
 
 
 async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) -> ScdReport:
@@ -141,10 +147,10 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
 
     if config.shallow:
         report.total_ai_calls = client.total_calls
-        report_ext = "json" if config.output_format == "json" else "md"
-        report_path = config.output_path or os.path.join(output_dir, f"report.{report_ext}")
-        save_report(report, report_path, config.output_format)
+        report_path, json_report_path = _report_paths(output_dir, config.output_path)
+        save_reports(report, report_path, json_report_path)
         console.print(f"\n[bold green]Done![/] Report saved to [bold]{report_path}[/]")
+        console.print(f"  JSON report saved to [bold]{json_report_path}[/]")
         return report
 
     # Build file pairs and write compared_pairs.txt
@@ -178,12 +184,12 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
 
     report.total_ai_calls = client.total_calls
 
-    report_ext = "json" if config.output_format == "json" else "md"
-    report_path = config.output_path or os.path.join(output_dir, f"report.{report_ext}")
-    save_report(report, report_path, config.output_format)
+    report_path, json_report_path = _report_paths(output_dir, config.output_path)
+    save_reports(report, report_path, json_report_path)
 
     total_time = time.monotonic() - t0
     console.print(f"\n[bold green]Done![/] Total time: {total_time:.1f}s, AI calls: {report.total_ai_calls}")
     console.print(f"  Report saved to [bold]{report_path}[/]")
+    console.print(f"  JSON report saved to [bold]{json_report_path}[/]")
 
     return report
