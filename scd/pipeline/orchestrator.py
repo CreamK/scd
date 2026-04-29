@@ -57,6 +57,10 @@ def _report_paths(output_dir: str, output_path: str | None) -> tuple[str, str]:
     return markdown_path, json_path
 
 
+def _summary_cache_dir(output_dir: str, repo_label: str) -> Path:
+    return Path(output_dir) / ".scd_cache" / repo_label
+
+
 async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) -> ScdReport:
     """Run the full SCD comparison pipeline."""
     output_dir = config.output_dir
@@ -86,10 +90,14 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print("\n[bold blue]Phase 2a-1:[/] Generating file summaries...")
     t1 = time.monotonic()
 
-    file_summaries_a = await summarize_files(repo_a, client, config.model)
+    file_summaries_a = await summarize_files(
+        repo_a, client, config.model, _summary_cache_dir(output_dir, "repo_a"),
+    )
     console.print(f"  Repo A: {len(file_summaries_a)} file summaries")
 
-    file_summaries_b = await summarize_files(repo_b, client, config.model)
+    file_summaries_b = await summarize_files(
+        repo_b, client, config.model, _summary_cache_dir(output_dir, "repo_b"),
+    )
     console.print(f"  Repo B: {len(file_summaries_b)} file summaries")
 
     console.print(f"  File summaries completed in {time.monotonic() - t1:.1f}s")
@@ -98,10 +106,22 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     console.print("\n[bold blue]Phase 2a-2:[/] Generating directory summaries...")
     t1b = time.monotonic()
 
-    summaries_a = await summarize_repo(repo_a, client, config.model, file_summaries_a)
+    summaries_a = await summarize_repo(
+        repo_a,
+        client,
+        config.model,
+        file_summaries_a,
+        _summary_cache_dir(output_dir, "repo_a"),
+    )
     console.print(f"  Repo A: {len(summaries_a)} directory summaries")
 
-    summaries_b = await summarize_repo(repo_b, client, config.model, file_summaries_b)
+    summaries_b = await summarize_repo(
+        repo_b,
+        client,
+        config.model,
+        file_summaries_b,
+        _summary_cache_dir(output_dir, "repo_b"),
+    )
     console.print(f"  Repo B: {len(summaries_b)} directory summaries")
 
     console.print(f"  Directory summaries completed in {time.monotonic() - t1b:.1f}s")

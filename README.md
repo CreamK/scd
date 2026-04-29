@@ -86,6 +86,13 @@ output/
   dir_summaries.json
   compared_pairs.txt
   pair_cache.json
+  .scd_cache/
+    repo_a/
+      file_summaries.jsonl
+      dir_summaries.jsonl
+    repo_b/
+      file_summaries.jsonl
+      dir_summaries.jsonl
 ```
 
 默认会同时生成 Markdown 报告和 JSON 对比报告，不需要指定输出格式。
@@ -161,6 +168,7 @@ JSON 对比报告默认为 `output/report.json`，每个相似函数对一条记
 中间产物说明：
 
 - `dir_summaries.json`：两个仓库的目录摘要，便于检查目录匹配依据。
+- `.scd_cache/repo_a/` 和 `.scd_cache/repo_b/`：文件摘要和目录摘要缓存，不会写入被比较仓库。
 - `compared_pairs.txt`：实际进入函数比较的文件对。
 - `pair_cache.json`：函数比较缓存，用于长任务恢复。
 - `report.md` / `report.json`：最终报告。

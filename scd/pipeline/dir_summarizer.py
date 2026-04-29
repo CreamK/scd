@@ -39,7 +39,6 @@ from scd.models import DirInfo, FileInfo, RepoScanResult
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_CACHE_DIR_NAME = ".scd_cache"
 SUMMARY_CACHE_FILE_NAME = "dir_summaries.jsonl"
 SUMMARY_CACHE_VERSION = 5  # bumped: input semantics changed (file summaries, not full content)
 PROMPT_VERSION = 1
@@ -190,8 +189,8 @@ class SummaryCache:
     ratio of raw lines to unique dirs gets too high.
     """
 
-    def __init__(self, repo_path: str, model: str) -> None:
-        self._path = Path(repo_path) / SUMMARY_CACHE_DIR_NAME / SUMMARY_CACHE_FILE_NAME
+    def __init__(self, cache_dir: str | Path, model: str) -> None:
+        self._path = Path(cache_dir) / SUMMARY_CACHE_FILE_NAME
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._model = model
         self._store: dict[str, dict] = {}
@@ -643,13 +642,14 @@ async def summarize_repo(
     client: LlmClient,
     model: str,
     file_summaries: dict[str, str],
+    cache_dir: str | Path,
 ) -> dict[str, str]:
     """Generate hierarchical directory summaries from per-file summaries.
 
     Returns ``{dir_relative_path: summary_json_string}``. Uses a per-subtree
     content hash to skip directories whose subtree hasn't changed.
     """
-    cache = SummaryCache(repo.root_path, model)
+    cache = SummaryCache(cache_dir, model)
     loaded = cache.load()
     if loaded:
         logger.info("Loaded %d cached dir summaries from %s", loaded, cache.path)

@@ -5,9 +5,9 @@ its purpose, exports, imports, frameworks, patterns, and a couple of
 characteristic snippets. These per-file summaries are then consumed by the
 directory-level reduce step (see ``scd.pipeline.dir_summarizer``).
 
-Summaries are cached by `content_hash` in ``.scd_cache/file_summaries.jsonl``,
-so identical contents (across files within one repo or across runs) can be
-reused across models for the same cache/prompt version.
+Summaries are cached by `content_hash` in an output-scoped
+``file_summaries.jsonl``, so identical contents can be reused across models
+for the same cache/prompt version without writing into source repositories.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from scd.pipeline.dir_summarizer import (
 
 logger = logging.getLogger(__name__)
 
-FILE_SUMMARY_CACHE_DIR_NAME = ".scd_cache"
 FILE_SUMMARY_CACHE_FILE_NAME = "file_summaries.jsonl"
 FILE_SUMMARY_CACHE_VERSION = 1
 FILE_PROMPT_VERSION = 1
@@ -76,12 +75,8 @@ def compute_file_hash(content: str, language: str) -> str:
 class FileSummaryCache:
     """Append-only JSONL cache keyed by file content hash."""
 
-    def __init__(self, repo_path: str, model: str) -> None:
-        self._path = (
-            Path(repo_path)
-            / FILE_SUMMARY_CACHE_DIR_NAME
-            / FILE_SUMMARY_CACHE_FILE_NAME
-        )
+    def __init__(self, cache_dir: str | Path, model: str) -> None:
+        self._path = Path(cache_dir) / FILE_SUMMARY_CACHE_FILE_NAME
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._model = model
         self._store: dict[str, dict] = {}
@@ -226,6 +221,7 @@ async def summarize_files(
     repo: RepoScanResult,
     client: LlmClient,
     model: str,
+    cache_dir: str | Path,
 ) -> dict[str, str]:
     """Produce one JSON summary per source file in the repo.
 
@@ -233,7 +229,7 @@ async def summarize_files(
     its JSON-encoded summary string. Concurrency is bounded by the
     ``LlmClient``'s global in-flight semaphore.
     """
-    cache = FileSummaryCache(repo.root_path, model)
+    cache = FileSummaryCache(cache_dir, model)
     loaded = cache.load()
     if loaded:
         logger.info("Loaded %d cached file summaries from %s", loaded, cache.path)
