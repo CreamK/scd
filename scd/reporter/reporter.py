@@ -84,10 +84,33 @@ def _render_html_context(report: ScdReport, sf: SimilarFunction) -> str:
     )
 
 
+def _extract_function_source(repo_root: str, location: FuncLocation) -> str:
+    """Return the raw source text of a function as bounded by its line range.
+
+    Line numbers are 1-indexed and inclusive, matching ``FuncLocation`` semantics
+    used elsewhere (markdown snippet rendering, HTML context, etc.).
+    """
+    text = _read_source_text(repo_root, location.file)
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if location.line_start < 1 or location.line_end < location.line_start:
+        return ""
+    start_idx = location.line_start - 1
+    end_idx = min(location.line_end, len(lines))
+    if start_idx >= end_idx:
+        return ""
+    return "\n".join(lines[start_idx:end_idx])
+
+
 def _pair_hash(report: ScdReport, sf: SimilarFunction) -> str:
-    source_a = _read_source_text(report.repo_a_path, sf.func_a.file)
-    source_b = _read_source_text(report.repo_b_path, sf.func_b.file)
-    return hashlib.sha256((source_a + source_b).encode("utf-8")).hexdigest()
+    source_a = _extract_function_source(report.repo_a_path, sf.func_a)
+    source_b = _extract_function_source(report.repo_b_path, sf.func_b)
+    h = hashlib.sha256()
+    h.update(source_a.encode("utf-8"))
+    h.update(b"\x00")
+    h.update(source_b.encode("utf-8"))
+    return h.hexdigest()
 
 
 def _review_json_records(report: ScdReport) -> list[dict[str, str]]:

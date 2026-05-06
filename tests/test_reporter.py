@@ -177,10 +177,13 @@ class ReporterCodeSnippetTests(unittest.TestCase):
             self.assertEqual(pair["Linux_file"], "lib/b.py")
             self.assertEqual(pair["reason"], "The implementations line up closely.")
             self.assertEqual(pair["severity"], "high")
-            self.assertEqual(
-                pair["hash"],
-                hashlib.sha256((content_a + content_b).encode("utf-8")).hexdigest(),
-            )
+            func_source_a = "\n".join(content_a.splitlines()[23:26])
+            func_source_b = "\n".join(content_b.splitlines()[24:27])
+            expected_hasher = hashlib.sha256()
+            expected_hasher.update(func_source_a.encode("utf-8"))
+            expected_hasher.update(b"\x00")
+            expected_hasher.update(func_source_b.encode("utf-8"))
+            self.assertEqual(pair["hash"], expected_hasher.hexdigest())
             self.assertIn('class="scd-side scd-side-left"', pair["html_context"])
             self.assertIn('class="scd-highlight"', pair["html_context"])
             self.assertIn("background-color:#ffe4e6;", pair["html_context"])
