@@ -57,7 +57,8 @@ class ScdConfig:
     max_file_lines: int = 10000
     model: str = "gpt-4o-mini"
     output_path: str | None = None
-    output_dir: str = "output"
+    # When None, the pipeline auto-generates "{repo_a_name}_{repo_b_name}_output".
+    output_dir: str | None = None
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
     match_batch_size: int = 40

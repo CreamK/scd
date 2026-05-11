@@ -51,8 +51,27 @@ def _write_compared_pairs(output_dir: str, file_pairs: list[tuple[str, str]]) ->
     return path
 
 
-def _report_paths(output_dir: str, output_path: str | None) -> tuple[str, str]:
-    markdown_path = output_path or os.path.join(output_dir, "report.md")
+REPORT_DIR = "output"
+
+
+def _report_paths(
+    repo_a_path: str,
+    repo_b_path: str,
+    output_path: str | None,
+) -> tuple[str, str]:
+    """Resolve final report paths.
+
+    Reports always live under the top-level ``output/`` directory by default
+    (independent of the per-comparison artifact dir), prefixed with the two
+    repo names so concurrent comparisons don't clobber each other. When the
+    user provides ``-o/--output`` we honor it verbatim and derive the JSON
+    sibling from its stem.
+    """
+    if output_path:
+        markdown_path = output_path
+    else:
+        stem = f"{_sanitize_repo_name(repo_a_path)}_{_sanitize_repo_name(repo_b_path)}_report"
+        markdown_path = os.path.join(REPORT_DIR, stem + ".md")
     json_path = str(Path(markdown_path).with_suffix(".json"))
     return markdown_path, json_path
 
@@ -61,9 +80,21 @@ def _summary_cache_dir(output_dir: str, repo_label: str) -> Path:
     return Path(output_dir) / ".scd_cache" / repo_label
 
 
+def _sanitize_repo_name(repo_path: str) -> str:
+    """Derive a filesystem-safe repo name from a path (falls back to 'repo')."""
+    name = Path(repo_path).resolve().name or "repo"
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+    return safe or "repo"
+
+
+def _default_output_dir(repo_a_path: str, repo_b_path: str) -> str:
+    return f"{_sanitize_repo_name(repo_a_path)}_{_sanitize_repo_name(repo_b_path)}_output"
+
+
 async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) -> ScdReport:
     """Run the full SCD comparison pipeline."""
-    output_dir = config.output_dir
+    output_dir = config.output_dir or _default_output_dir(repo_a_path, repo_b_path)
+    config.output_dir = output_dir
     os.makedirs(output_dir, exist_ok=True)
 
     client = LlmClient(config)
@@ -167,7 +198,9 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
 
     if config.shallow:
         report.total_ai_calls = client.total_calls
-        report_path, json_report_path = _report_paths(output_dir, config.output_path)
+        report_path, json_report_path = _report_paths(
+            repo_a_path, repo_b_path, config.output_path,
+        )
         save_reports(report, report_path, json_report_path)
         console.print(f"\n[bold green]Done![/] Report saved to [bold]{report_path}[/]")
         console.print(f"  JSON report saved to [bold]{json_report_path}[/]")
@@ -204,7 +237,9 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
 
     report.total_ai_calls = client.total_calls
 
-    report_path, json_report_path = _report_paths(output_dir, config.output_path)
+    report_path, json_report_path = _report_paths(
+        repo_a_path, repo_b_path, config.output_path,
+    )
     save_reports(report, report_path, json_report_path)
 
     total_time = time.monotonic() - t0

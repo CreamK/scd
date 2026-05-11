@@ -32,7 +32,7 @@ def main() -> None:
 @click.argument("repo_a", type=click.Path(exists=True))
 @click.argument("repo_b", type=click.Path(exists=True))
 @click.option("-o", "--output", default=None, help="Markdown report file path (JSON report uses the same stem).")
-@click.option("--output-dir", default="output", help="Output directory for all artifacts (default: output).")
+@click.option("--output-dir", default=None, help="Output directory for all artifacts (default: <repo_a>_<repo_b>_output).")
 @click.option("-r", "--rps", default=3.0, type=float, help="Max requests per second to the AI API.")
 @click.option("-t", "--threshold", default=20, type=int, help="Minimum composite similarity score (0-100, default 20).")
 @click.option("-m", "--model", default="gpt-4o-mini", help="LLM model name (OpenAI-compatible).")
@@ -49,7 +49,7 @@ def compare(
     repo_a: str,
     repo_b: str,
     output: str | None,
-    output_dir: str,
+    output_dir: str | None,
     rps: float,
     threshold: int,
     model: str,

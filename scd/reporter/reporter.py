@@ -129,13 +129,21 @@ def _review_json_records(report: ScdReport) -> list[dict[str, str]]:
     return records
 
 
+def _ensure_parent_dir(path: str) -> None:
+    parent = Path(path).parent
+    if str(parent) and str(parent) != ".":
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 def save_json(report: ScdReport, path: str) -> None:
     data = _review_json_records(report)
+    _ensure_parent_dir(path)
     Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def save_markdown(report: ScdReport, path: str) -> None:
     md = render_markdown(report)
+    _ensure_parent_dir(path)
     Path(path).write_text(md, encoding="utf-8")
 
 
