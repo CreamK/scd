@@ -62,6 +62,10 @@ class ScdConfig:
     lang_filter: set[str] = field(default_factory=set)
     shallow: bool = False
     match_batch_size: int = 40
+    # Minimum confidence level (high|medium|low) for matched directory pairs
+    # to enter Phase 3 function comparison. Lower-confidence pairs still
+    # appear in the report; they are only excluded from file-pair generation.
+    dir_confidence: str = "high"
     # Hard cap on the number of LLM requests in flight at any time.
     # Acts as an outer bound around the per-second `rps` limiter; useful for
     # self-hosted gateways that can't handle large bursts even within budget.

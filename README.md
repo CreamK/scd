@@ -56,6 +56,7 @@ OPENAI_MODEL=gpt-4o-mini
 ```env
 RPS=3.0
 MATCH_BATCH_SIZE=40
+DIR_CONFIDENCE=high
 USE_JSON_MODE=false
 PARALLEL_TOOL_CALLS=false
 ```
@@ -64,6 +65,7 @@ PARALLEL_TOOL_CALLS=false
 
 - `RPS`：限制每秒请求数，避免触发 API 限流。
 - `MATCH_BATCH_SIZE`：目录匹配阶段每批传给模型的目录数量。
+- `DIR_CONFIDENCE`：只有置信度 `>=` 该等级（`high|medium|low`）的目录匹配会进入函数比较阶段，默认 `high`；低于该等级的目录对仍会出现在报告的目录匹配部分。
 - `USE_JSON_MODE`：是否强制使用 `response_format=json_object`。
 - `PARALLEL_TOOL_CALLS`：是否允许并行 tool calls。
 
@@ -181,7 +183,7 @@ SCD 的比较流程分为四个阶段：
 
 1. 扫描仓库：收集支持的源代码文件，并应用默认忽略规则。
 2. 生成摘要：先为文件生成摘要，再聚合为目录摘要。
-3. 匹配目录：用目录摘要判断两个仓库中职责相近的目录。
+3. 匹配目录：用目录摘要判断两个仓库中职责相近的目录，按 `DIR_CONFIDENCE` 过滤后再进入函数比较；未过滤掉的低置信度目录仍会保留在报告里供参考。
 4. 比较函数：在匹配目录内构建文件对，进行函数级相似度分析并生成报告。
 
 默认支持的源码类型包括 Python、TypeScript、JavaScript、Go、Java、Rust、C/C++、C#、Ruby、PHP、Swift、Kotlin、Scala、Vue、Svelte 等。

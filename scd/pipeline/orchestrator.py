@@ -13,6 +13,7 @@ from scd.config import ScdConfig
 from scd.models import RepoScanResult, ScdReport
 from scd.pipeline.dir_summarizer import summarize_repo
 from scd.pipeline.directory_matcher import (
+    CONFIDENCE_ORDER,
     compute_match_key,
     load_match_cache,
     match_directories,
@@ -206,8 +207,23 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
         console.print(f"  JSON report saved to [bold]{json_report_path}[/]")
         return report
 
+    # Filter matched directories by minimum confidence before generating file
+    # pairs. Lower-confidence pairs remain in the report's directory match
+    # section but do not trigger Phase 3 function comparison.
+    min_rank = CONFIDENCE_ORDER.get(config.dir_confidence, CONFIDENCE_ORDER["high"])
+    filtered_matches = [
+        m for m in dir_result.matched_dirs
+        if CONFIDENCE_ORDER.get(m.confidence, 0) >= min_rank
+    ]
+    dropped = len(dir_result.matched_dirs) - len(filtered_matches)
+    if dropped:
+        console.print(
+            f"  Filtered out {dropped} dir pair(s) below confidence "
+            f"'{config.dir_confidence}' (keeping {len(filtered_matches)})"
+        )
+
     # Build file pairs and write compared_pairs.txt
-    all_file_pairs = build_all_file_pairs(dir_result.matched_dirs, repo_a, repo_b)
+    all_file_pairs = build_all_file_pairs(filtered_matches, repo_a, repo_b)
     pairs_path = _write_compared_pairs(output_dir, all_file_pairs)
     console.print(f"\n  File pairs determined: {len(all_file_pairs)} pairs")
     console.print(f"  Compared pairs saved to [bold]{pairs_path}[/]")

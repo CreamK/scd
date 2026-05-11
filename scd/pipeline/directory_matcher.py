@@ -18,7 +18,7 @@ from scd.models import DirMatch, DirMatchResult, RepoScanResult
 logger = logging.getLogger(__name__)
 DIRECTORY_MATCH_MAX_TOKENS = 3072
 HEURISTIC_MIN_SCORE = 0.22
-_CONF_ORDER = {"high": 3, "medium": 2, "low": 1}
+CONFIDENCE_ORDER = {"high": 3, "medium": 2, "low": 1}
 
 MATCH_CACHE_DIR_NAME = ".scd_cache"
 MATCH_CACHE_FILE_NAME = "dir_match.json"
@@ -192,7 +192,7 @@ def _resolve_one_to_one(matches: list[DirMatch]) -> DirMatchResult:
     """
     matches_sorted = sorted(
         matches,
-        key=lambda m: _CONF_ORDER.get(m.confidence, 0),
+        key=lambda m: CONFIDENCE_ORDER.get(m.confidence, 0),
         reverse=True,
     )
     used_a: set[str] = set()

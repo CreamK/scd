@@ -92,6 +92,14 @@ def compare(
     if parallel_tool_calls is None:
         parallel_tool_calls = _parse_bool(env.get("PARALLEL_TOOL_CALLS")) or False
 
+    dir_confidence = (env.get("DIR_CONFIDENCE") or "high").strip().lower()
+    if dir_confidence not in {"high", "medium", "low"}:
+        console.print(
+            f"[yellow]Warning:[/] invalid DIR_CONFIDENCE={dir_confidence!r}, "
+            "expected high|medium|low; falling back to 'high'."
+        )
+        dir_confidence = "high"
+
     lang_filter = set()
     if lang:
         lang_filter = {l.strip().lower() for l in lang.split(",")}
@@ -110,6 +118,7 @@ def compare(
         max_in_flight=max_in_flight,
         use_json_mode=json_mode,
         parallel_tool_calls=parallel_tool_calls,
+        dir_confidence=dir_confidence,
     )
 
     try:
