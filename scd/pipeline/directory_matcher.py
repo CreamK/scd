@@ -185,6 +185,44 @@ def _chunk(summaries: dict[str, str], size: int) -> list[dict[str, str]]:
     return [dict(items[i:i + size]) for i in range(0, len(items), size)]
 
 
+def _is_strict_descendant(child: str, parent: str) -> bool:
+    """Return True if ``child`` lives strictly under ``parent`` (POSIX-style paths).
+
+    Repo scan results normalize directory paths to forward slashes; the empty
+    string represents the repo root and contains every other directory.
+    """
+    if child == parent:
+        return False
+    if parent == "":
+        return child != ""
+    return child.startswith(parent + "/")
+
+
+def drop_ancestor_matches(matches: list[DirMatch]) -> list[DirMatch]:
+    """Drop directory pairs whose either side has a more specific match.
+
+    When both a parent directory and one of its descendants are matched (on
+    either side of the pair), the parent match would otherwise pull every
+    file in its subtree into the function-comparison step, including files
+    already claimed by the descendant match plus cross-products against the
+    other repo's unrelated siblings. Keeping only leaf-most matches avoids
+    that combinatorial explosion and matches the LLM prompt's instruction to
+    prefer leaf-to-leaf matches.
+    """
+    keep: list[DirMatch] = []
+    for m in matches:
+        has_descendant = any(
+            other is not m and (
+                _is_strict_descendant(other.dir_a, m.dir_a)
+                or _is_strict_descendant(other.dir_b, m.dir_b)
+            )
+            for other in matches
+        )
+        if not has_descendant:
+            keep.append(m)
+    return keep
+
+
 def _resolve_one_to_one(matches: list[DirMatch]) -> DirMatchResult:
     """Collapse cross-batch duplicates into a one-to-one mapping.
 

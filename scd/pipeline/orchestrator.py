@@ -15,6 +15,7 @@ from scd.pipeline.dir_summarizer import summarize_repo
 from scd.pipeline.directory_matcher import (
     CONFIDENCE_ORDER,
     compute_match_key,
+    drop_ancestor_matches,
     load_match_cache,
     match_directories,
     save_match_cache,
@@ -222,8 +223,20 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
             f"'{config.dir_confidence}' (keeping {len(filtered_matches)})"
         )
 
+    # When a matched directory has a descendant directory that is also matched
+    # (on either side), drop the parent: the descendant is more specific and
+    # the parent would otherwise pull unrelated sibling subtrees into the
+    # cross-product, exploding the function-comparison workload.
+    specific_matches = drop_ancestor_matches(filtered_matches)
+    ancestor_dropped = len(filtered_matches) - len(specific_matches)
+    if ancestor_dropped:
+        console.print(
+            f"  Dropped {ancestor_dropped} ancestor dir pair(s) superseded by "
+            f"more specific matches (keeping {len(specific_matches)})"
+        )
+
     # Build file pairs and write compared_pairs.txt
-    all_file_pairs = build_all_file_pairs(filtered_matches, repo_a, repo_b)
+    all_file_pairs = build_all_file_pairs(specific_matches, repo_a, repo_b)
     pairs_path = _write_compared_pairs(output_dir, all_file_pairs)
     console.print(f"\n  File pairs determined: {len(all_file_pairs)} pairs")
     console.print(f"  Compared pairs saved to [bold]{pairs_path}[/]")
