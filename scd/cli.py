@@ -92,13 +92,13 @@ def compare(
     if parallel_tool_calls is None:
         parallel_tool_calls = _parse_bool(env.get("PARALLEL_TOOL_CALLS")) or False
 
-    dir_confidence = (env.get("DIR_CONFIDENCE") or "high").strip().lower()
+    dir_confidence = (env.get("DIR_CONFIDENCE") or "medium").strip().lower()
     if dir_confidence not in {"high", "medium", "low"}:
         console.print(
             f"[yellow]Warning:[/] invalid DIR_CONFIDENCE={dir_confidence!r}, "
-            "expected high|medium|low; falling back to 'high'."
+            "expected high|medium|low; falling back to 'medium'."
         )
-        dir_confidence = "high"
+        dir_confidence = "medium"
 
     lang_filter = set()
     if lang:

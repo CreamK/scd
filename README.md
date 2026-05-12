@@ -56,7 +56,7 @@ OPENAI_MODEL=gpt-4o-mini
 ```env
 RPS=3.0
 MATCH_BATCH_SIZE=40
-DIR_CONFIDENCE=high
+DIR_CONFIDENCE=medium
 USE_JSON_MODE=false
 PARALLEL_TOOL_CALLS=false
 ```
@@ -65,7 +65,7 @@ PARALLEL_TOOL_CALLS=false
 
 - `RPS`：限制每秒请求数，避免触发 API 限流。
 - `MATCH_BATCH_SIZE`：目录匹配阶段每批传给模型的目录数量。
-- `DIR_CONFIDENCE`：只有置信度 `>=` 该等级（`high|medium|low`）的目录匹配会进入函数比较阶段，默认 `high`；低于该等级的目录对仍会出现在报告的目录匹配部分。
+- `DIR_CONFIDENCE`：只有置信度 `>=` 该等级（`high|medium|low`）的目录匹配会进入函数比较阶段，默认 `medium`（即 high 和 medium 都会进入）；低于该等级的目录对仍会出现在报告的目录匹配部分。
 - `USE_JSON_MODE`：是否强制使用 `response_format=json_object`。
 - `PARALLEL_TOOL_CALLS`：是否允许并行 tool calls。
 

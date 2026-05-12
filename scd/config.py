@@ -65,7 +65,7 @@ class ScdConfig:
     # Minimum confidence level (high|medium|low) for matched directory pairs
     # to enter Phase 3 function comparison. Lower-confidence pairs still
     # appear in the report; they are only excluded from file-pair generation.
-    dir_confidence: str = "high"
+    dir_confidence: str = "medium"
     # Hard cap on the number of LLM requests in flight at any time.
     # Acts as an outer bound around the per-second `rps` limiter; useful for
     # self-hosted gateways that can't handle large bursts even within budget.

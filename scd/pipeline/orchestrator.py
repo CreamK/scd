@@ -211,7 +211,7 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     # Filter matched directories by minimum confidence before generating file
     # pairs. Lower-confidence pairs remain in the report's directory match
     # section but do not trigger Phase 3 function comparison.
-    min_rank = CONFIDENCE_ORDER.get(config.dir_confidence, CONFIDENCE_ORDER["high"])
+    min_rank = CONFIDENCE_ORDER.get(config.dir_confidence, CONFIDENCE_ORDER["medium"])
     filtered_matches = [
         m for m in dir_result.matched_dirs
         if CONFIDENCE_ORDER.get(m.confidence, 0) >= min_rank
