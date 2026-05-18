@@ -25,7 +25,7 @@ SOURCE_EXTENSIONS = {
     ".py", ".ts", ".tsx", ".js", ".jsx",
     ".go", ".java", ".rs", ".cpp", ".c", ".h", ".hpp",
     ".cs", ".rb", ".php", ".swift", ".kt", ".scala",
-    ".vue", ".svelte",
+    ".vue", ".svelte",".S",
 }
 
 DEFAULT_IGNORE_DIRS = {
