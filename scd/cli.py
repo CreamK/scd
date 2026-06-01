@@ -41,6 +41,12 @@ def main() -> None:
 @click.option("--lang", default=None, help="Comma-separated language filter (e.g. py,ts).")
 @click.option("--shallow", is_flag=True, help="Only do directory-level matching (no function comparison).")
 @click.option("--match-batch-size", default=40, type=int, help="Max directories per side per Phase 2b AI call (default 40).")
+@click.option(
+    "--dir-match-depth",
+    type=click.Choice(["deepest", "highest"]),
+    default=None,
+    help="Directory overlap strategy before function comparison: deepest or highest (default deepest).",
+)
 @click.option("--max-in-flight", envvar="SCD_MAX_IN_FLIGHT", default=8, type=int, help="Hard cap on concurrent LLM requests (default 8; or set SCD_MAX_IN_FLIGHT env var).")
 @click.option("--json-mode/--no-json-mode", default=None, help="Force response_format=json_object on 2b/3 (auto-downgrades if endpoint rejects).")
 @click.option("--parallel-tool-calls/--no-parallel-tool-calls", default=None, help="Allow parallel tool_calls in 2a (auto-downgrades if endpoint rejects).")
@@ -58,6 +64,7 @@ def compare(
     lang: str | None,
     shallow: bool,
     match_batch_size: int,
+    dir_match_depth: str | None,
     max_in_flight: int,
     json_mode: bool | None,
     parallel_tool_calls: bool | None,
@@ -100,6 +107,15 @@ def compare(
         )
         dir_confidence = "medium"
 
+    if dir_match_depth is None:
+        dir_match_depth = (env.get("DIR_MATCH_DEPTH") or "deepest").strip().lower()
+    if dir_match_depth not in {"deepest", "highest"}:
+        console.print(
+            f"[yellow]Warning:[/] invalid DIR_MATCH_DEPTH={dir_match_depth!r}, "
+            "expected deepest|highest; falling back to 'deepest'."
+        )
+        dir_match_depth = "deepest"
+
     lang_filter = set()
     if lang:
         lang_filter = {l.strip().lower() for l in lang.split(",")}
@@ -119,6 +135,7 @@ def compare(
         use_json_mode=json_mode,
         parallel_tool_calls=parallel_tool_calls,
         dir_confidence=dir_confidence,
+        dir_match_depth=dir_match_depth,
     )
 
     try:

@@ -5,3 +5,4 @@ __pycache__/
 reps/
 output/
 *_output/
+.DS_Store

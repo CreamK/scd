@@ -223,6 +223,32 @@ def drop_ancestor_matches(matches: list[DirMatch]) -> list[DirMatch]:
     return keep
 
 
+def drop_descendant_matches(matches: list[DirMatch]) -> list[DirMatch]:
+    """Drop directory pairs whose either side is covered by a higher-level match."""
+    keep: list[DirMatch] = []
+    for m in matches:
+        has_ancestor = any(
+            other is not m and (
+                _is_strict_descendant(m.dir_a, other.dir_a)
+                or _is_strict_descendant(m.dir_b, other.dir_b)
+            )
+            for other in matches
+        )
+        if not has_ancestor:
+            keep.append(m)
+    return keep
+
+
+def filter_matches_by_depth(matches: list[DirMatch], depth: str) -> list[DirMatch]:
+    """Select parent/child-overlapping matches by requested directory depth."""
+    normalized = (depth or "deepest").strip().lower()
+    if normalized == "deepest":
+        return drop_ancestor_matches(matches)
+    if normalized == "highest":
+        return drop_descendant_matches(matches)
+    raise ValueError(f"Invalid directory match depth: {depth!r}")
+
+
 def _resolve_one_to_one(matches: list[DirMatch]) -> DirMatchResult:
     """Collapse cross-batch duplicates into a one-to-one mapping.
 

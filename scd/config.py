@@ -66,6 +66,9 @@ class ScdConfig:
     # to enter Phase 3 function comparison. Lower-confidence pairs still
     # appear in the report; they are only excluded from file-pair generation.
     dir_confidence: str = "medium"
+    # Directory overlap strategy before Phase 3: deepest keeps the most
+    # specific match, highest keeps the top-most matching directory.
+    dir_match_depth: str = "deepest"
     # Hard cap on the number of LLM requests in flight at any time.
     # Acts as an outer bound around the per-second `rps` limiter; useful for
     # self-hosted gateways that can't handle large bursts even within budget.

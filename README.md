@@ -57,6 +57,7 @@ OPENAI_MODEL=gpt-4o-mini
 RPS=3.0
 MATCH_BATCH_SIZE=40
 DIR_CONFIDENCE=medium
+DIR_MATCH_DEPTH=deepest
 USE_JSON_MODE=false
 PARALLEL_TOOL_CALLS=false
 ```
@@ -66,6 +67,7 @@ PARALLEL_TOOL_CALLS=false
 - `RPS`：限制每秒请求数，避免触发 API 限流。
 - `MATCH_BATCH_SIZE`：目录匹配阶段每批传给模型的目录数量。
 - `DIR_CONFIDENCE`：只有置信度 `>=` 该等级（`high|medium|low`）的目录匹配会进入函数比较阶段，默认 `medium`（即 high 和 medium 都会进入）；低于该等级的目录对仍会出现在报告的目录匹配部分。
+- `DIR_MATCH_DEPTH`：当父子目录都被匹配时，选择进入函数比较的层级；`deepest` 保留最深层匹配（默认），`highest` 保留最高层匹配。
 - `USE_JSON_MODE`：是否强制使用 `response_format=json_object`。
 - `PARALLEL_TOOL_CALLS`：是否允许并行 tool calls。
 
@@ -125,6 +127,12 @@ scd compare /path/to/repo-a /path/to/repo-b --lang py,ts,tsx
 scd compare /path/to/repo-a /path/to/repo-b --threshold 60
 ```
 
+当同一组目录同时匹配到父目录和子目录时，使用最高层目录进入函数比较：
+
+```bash
+scd compare /path/to/repo-a /path/to/repo-b --dir-match-depth highest
+```
+
 ## 常用参数
 
 | 参数 | 默认值 | 说明 |
@@ -141,6 +149,7 @@ scd compare /path/to/repo-a /path/to/repo-b --threshold 60
 | `--lang` | 不限制 | 逗号分隔的语言过滤器，例如 `py,ts` |
 | `--shallow` | 关闭 | 只做目录匹配，不做函数级比较 |
 | `--match-batch-size` | `40` | 目录匹配阶段的批大小 |
+| `--dir-match-depth` | `deepest` | 父子目录都匹配时进入函数比较的层级：`deepest` 保留最深层，`highest` 保留最高层 |
 | `--max-in-flight` | `8` | 同时进行中的 LLM 请求上限 |
 | `--json-mode` / `--no-json-mode` | 自动/关闭 | 是否启用 JSON mode |
 | `--parallel-tool-calls` / `--no-parallel-tool-calls` | 自动/关闭 | 是否启用并行 tool calls |
@@ -183,7 +192,7 @@ SCD 的比较流程分为四个阶段：
 
 1. 扫描仓库：收集支持的源代码文件，并应用默认忽略规则。
 2. 生成摘要：先为文件生成摘要，再聚合为目录摘要。
-3. 匹配目录：用目录摘要判断两个仓库中职责相近的目录，按 `DIR_CONFIDENCE` 过滤后再进入函数比较；当某个匹配目录在任一侧还存在被匹配的后代目录时，父匹配会让位给更具体的子匹配，以避免父子重叠引起的文件对爆炸。未参与函数比较的低置信度目录或父匹配仍会保留在报告中供参考。
+3. 匹配目录：用目录摘要判断两个仓库中职责相近的目录，按 `DIR_CONFIDENCE` 过滤后再进入函数比较；当某个匹配目录在任一侧还存在父子重叠时，`DIR_MATCH_DEPTH=deepest` 会让父匹配让位给更具体的子匹配，`DIR_MATCH_DEPTH=highest` 会保留最高层父匹配。未参与函数比较的低置信度目录或被层级策略过滤的目录仍会保留在报告中供参考。
 4. 比较函数：在匹配目录内构建文件对，进行函数级相似度分析并生成报告。
 
 默认支持的源码类型包括 Python、TypeScript、JavaScript、Go、Java、Rust、C/C++、C#、Ruby、PHP、Swift、Kotlin、Scala、Vue、Svelte 等。
