@@ -107,14 +107,14 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
                     "func_b": {"name": "copy_user", "line_start": 1, "line_end": 10},
                     "scores": {
                         "data_structure": 60,
-                        "function_signature": 60,
+                        "function_signature": 50,
                         "algorithm_logic": 60,
-                        "naming_convention": 60,
-                        "protocol_conformance": 60,
+                        "naming_convention": 40,
+                        "protocol_conformance": 40,
                     },
-                    "composite_score": 45,
-                    "similarity_level": "medium",
-                    "analysis": "The model reported this despite the caller's higher threshold.",
+                    "composite_score": 90,
+                    "similarity_level": "high",
+                    "analysis": "Recomputed composite (57) clears the core gate but is below the caller's threshold of 60.",
                 }
             ]
         }

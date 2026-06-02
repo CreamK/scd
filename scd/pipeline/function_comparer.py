@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 PAIR_CACHE_DIR_NAME = ".scd_cache"
 PAIR_CACHE_FILE_NAME = "pair_results.jsonl"
-PAIR_CACHE_VERSION = 1
-IMPLEMENTATION_CORE_MIN_SCORE = 45
+PAIR_CACHE_VERSION = 2
+IMPLEMENTATION_CORE_MIN_SCORE = 60
 
 
 def compute_pair_key(
@@ -212,6 +212,34 @@ def _build_file_pairs(
     return list(product(files_a, files_b))
 
 
+def _composite_from_scores(scores: DimensionScores) -> int:
+    """Recompute the weighted composite from the per-dimension scores.
+
+    The model's self-reported ``composite_score`` is intentionally ignored: we
+    always derive the composite here so the documented weighting is actually
+    enforced and cannot drift from what the model claims.
+    """
+    weighted = (
+        scores.data_structure * 0.40
+        + scores.function_signature * 0.10
+        + scores.algorithm_logic * 0.40
+        + scores.naming_convention * 0.05
+        + scores.protocol_conformance * 0.05
+    )
+    return round(weighted)
+
+
+def _level_from_composite(composite: int) -> SimilarityLevel:
+    """Map a composite score to a similarity level (matches the prompt bands)."""
+    if composite > 60:
+        return SimilarityLevel.HIGH
+    if composite >= 40:
+        return SimilarityLevel.MEDIUM
+    if composite >= 20:
+        return SimilarityLevel.LOW
+    return SimilarityLevel.VERY_LOW
+
+
 def _passes_implementation_similarity_gate(
     scores: DimensionScores,
     composite_score: int,
@@ -249,13 +277,8 @@ def _parse_similar_functions(
                 protocol_conformance=int(raw_scores.get("protocol_conformance", 0)),
             )
 
-            composite = int(item.get("composite_score", 0))
-
-            level_str = item.get("similarity_level", "very_low")
-            try:
-                level = SimilarityLevel(level_str)
-            except ValueError:
-                level = SimilarityLevel.VERY_LOW
+            composite = _composite_from_scores(scores)
+            level = _level_from_composite(composite)
 
             similar = SimilarFunction(
                 func_a=FuncLocation(
