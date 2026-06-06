@@ -2,7 +2,20 @@ from __future__ import annotations
 
 import unittest
 
-from scd.pipeline.function_comparer import _parse_similar_functions
+from scd.models import DirInfo, DirMatch, FileInfo, RepoScanResult
+from scd.pipeline.function_comparer import build_all_file_pairs, _parse_similar_functions
+
+
+def _repo(root: str, dir_path: str, files: list[tuple[str, str]]) -> RepoScanResult:
+    file_infos = [
+        FileInfo(path=path, language=language, line_count=10)
+        for path, language in files
+    ]
+    return RepoScanResult(
+        root_path=root,
+        dirs={dir_path: DirInfo(path=dir_path, files=file_infos)},
+        file_contents={path: "content" for path, _language in files},
+    )
 
 
 class ParseSimilarFunctionsTests(unittest.TestCase):
@@ -120,6 +133,37 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
         }
 
         self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=60), [])
+
+
+class BuildFilePairsTests(unittest.TestCase):
+    def test_keeps_only_same_extension_pairs_for_matched_directories(self) -> None:
+        repo_a = _repo(
+            "repo_a",
+            "src",
+            [
+                ("src/main.c", "c"),
+                ("src/api.h", "c"),
+            ],
+        )
+        repo_b = _repo(
+            "repo_b",
+            "lib",
+            [
+                ("lib/main.c", "c"),
+                ("lib/api.h", "c"),
+            ],
+        )
+        match = DirMatch("src", "lib", confidence="high", reason="test")
+
+        pairs = build_all_file_pairs([match], repo_a, repo_b)
+
+        self.assertEqual(
+            pairs,
+            [
+                ("src/main.c", "lib/main.c"),
+                ("src/api.h", "lib/api.h"),
+            ],
+        )
 
 
 if __name__ == "__main__":

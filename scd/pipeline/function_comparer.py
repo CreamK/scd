@@ -201,15 +201,20 @@ def _build_file_pairs(
     """Generate all file pairs (n x m) for a matched directory pair.
 
     A matched directory claims every file under its subtree on both sides, so
-    files in nested subdirectories also participate in comparison. Cross-match
-    duplicates are removed later by ``build_all_file_pairs``.
+    files in nested subdirectories also participate in comparison. Only files
+    with the same extension are paired; cross-match duplicates are removed
+    later by ``build_all_file_pairs``.
     """
     if match.dir_a not in repo_a.dirs or match.dir_b not in repo_b.dirs:
         return []
 
     files_a = _iter_subtree_files(repo_a, match.dir_a)
     files_b = _iter_subtree_files(repo_b, match.dir_b)
-    return list(product(files_a, files_b))
+    return [
+        (file_a, file_b)
+        for file_a, file_b in product(files_a, files_b)
+        if Path(file_a).suffix.lower() == Path(file_b).suffix.lower()
+    ]
 
 
 def _composite_from_scores(scores: DimensionScores) -> int:
