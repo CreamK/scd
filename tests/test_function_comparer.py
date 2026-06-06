@@ -162,6 +162,36 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
 
         self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=60), [])
 
+    def test_filters_pair_when_model_reports_b_function_from_a_file(self) -> None:
+        data = {
+            "similar_functions": [
+                {
+                    "func_a": {
+                        "file": "a.py",
+                        "name": "copy_user",
+                        "line_start": 1,
+                        "line_end": 10,
+                    },
+                    "func_b": {
+                        "file": "a.py",
+                        "name": "copy_user_fast",
+                        "line_start": 12,
+                        "line_end": 20,
+                    },
+                    "scores": {
+                        "data_structure": 80,
+                        "function_signature": 70,
+                        "algorithm_logic": 80,
+                        "naming_convention": 75,
+                        "protocol_conformance": 60,
+                    },
+                    "analysis": "Both functions are from file A, so this is not a cross-file pair.",
+                }
+            ]
+        }
+
+        self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
+
 
 class BuildFilePairsTests(unittest.TestCase):
     def test_keeps_only_same_extension_pairs_for_matched_directories(self) -> None:

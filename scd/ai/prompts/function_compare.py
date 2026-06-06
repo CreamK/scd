@@ -65,6 +65,10 @@ Similarity levels based on composite score:
 - "very_low": < 20%
 
 Rules:
+- `func_a` MUST come from File A only, and its `file` field MUST be exactly `{file_a}`.
+- `func_b` MUST come from File B only, and its `file` field MUST be exactly `{file_b}`.
+- Never report two functions from File A as a pair. Never report two functions from File B as a pair.
+- If you find internal similarity within one file, ignore it; this task is ONLY cross-file File A vs File B similarity.
 - Only report pairs with composite score >= {threshold}.
 - Also require data_structure >= 60 and algorithm_logic >= 60.
   If either score is below 60, do not report the pair regardless of composite score.
@@ -91,17 +95,23 @@ Rules:
 Respond ONLY with valid JSON, no markdown, no explanation."""
 
 FUNCTION_COMPARE_USER = """\
-File A: {file_a}
+===== BEGIN FILE A: {file_a} =====
+Everything between BEGIN FILE A and END FILE A belongs to File A only.
+Use functions from this block only for `func_a`. Never use File A functions for `func_b`.
 ```
 {code_a}
 ```
+===== END FILE A: {file_a} =====
 
-File B: {file_b}
+===== BEGIN FILE B: {file_b} =====
+Everything between BEGIN FILE B and END FILE B belongs to File B only.
+Use functions from this block only for `func_b`. Never use File B functions for `func_a`.
 ```
 {code_b}
 ```
+===== END FILE B: {file_b} =====
 
-Find similar functions between these two files. Output JSON:
+Find similar cross-file function pairs between File A and File B. Output JSON:
 {{
     "similar_functions": [
         {{

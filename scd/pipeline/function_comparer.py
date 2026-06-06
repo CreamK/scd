@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 PAIR_CACHE_DIR_NAME = ".scd_cache"
 PAIR_CACHE_FILE_NAME = "pair_results.jsonl"
-PAIR_CACHE_VERSION = 2
+PAIR_CACHE_VERSION = 3
 IMPLEMENTATION_CORE_MIN_SCORE = 60
 
 
@@ -261,6 +261,13 @@ def _passes_implementation_similarity_gate(
     )
 
 
+def _reported_file_matches(reported: object, expected: str) -> bool:
+    """Return False only when the model explicitly reports the wrong file."""
+    if reported in (None, ""):
+        return True
+    return str(reported).strip() == expected
+
+
 def _parse_similar_functions(
     data: dict,
     file_a: str,
@@ -273,6 +280,20 @@ def _parse_similar_functions(
         try:
             fa = item["func_a"]
             fb = item["func_b"]
+
+            if (
+                not _reported_file_matches(fa.get("file"), file_a)
+                or not _reported_file_matches(fb.get("file"), file_b)
+            ):
+                logger.debug(
+                    "Filtered non-cross-file function pair: func_a.file=%r "
+                    "(expected %r), func_b.file=%r (expected %r)",
+                    fa.get("file"),
+                    file_a,
+                    fb.get("file"),
+                    file_b,
+                )
+                continue
 
             raw_scores = item.get("scores", {})
             scores = DimensionScores(
@@ -351,7 +372,11 @@ async def _compare_file_pair(
                 progress["cached"] = progress.get("cached", 0) + 1
             return cached
 
-    system = FUNCTION_COMPARE_SYSTEM.format(threshold=threshold)
+    system = FUNCTION_COMPARE_SYSTEM.format(
+        threshold=threshold,
+        file_a=file_a,
+        file_b=file_b,
+    )
     user = FUNCTION_COMPARE_USER.format(
         file_a=file_a, file_b=file_b,
         code_a=_annotate_with_line_numbers(code_a),
