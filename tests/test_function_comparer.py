@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
+from scd.config import ScdConfig
 from scd.models import DirInfo, DirMatch, FileInfo, RepoScanResult
-from scd.pipeline.function_comparer import build_all_file_pairs, _parse_similar_functions
+from scd.pipeline.function_comparer import (
+    build_all_file_pairs,
+    compare_file_pairs,
+    _parse_similar_functions,
+)
 
 
 def _repo(root: str, dir_path: str, files: list[tuple[str, str]]) -> RepoScanResult:
@@ -16,6 +22,28 @@ def _repo(root: str, dir_path: str, files: list[tuple[str, str]]) -> RepoScanRes
         dirs={dir_path: DirInfo(path=dir_path, files=file_infos)},
         file_contents={path: "content" for path, _language in files},
     )
+
+
+class _FakeClient:
+    async def ask_json(self, _system: str, user: str, **_kwargs: object) -> dict:
+        if "src/b.c" in user:
+            return {
+                "similar_functions": [
+                    {
+                        "func_a": {"name": "copy_value", "line_start": 1, "line_end": 1},
+                        "func_b": {"name": "copy_value", "line_start": 1, "line_end": 1},
+                        "scores": {
+                            "data_structure": 80,
+                            "function_signature": 80,
+                            "algorithm_logic": 80,
+                            "naming_convention": 80,
+                            "protocol_conformance": 80,
+                        },
+                        "analysis": "The implementation shape is aligned.",
+                    }
+                ]
+            }
+        return {"similar_functions": []}
 
 
 class ParseSimilarFunctionsTests(unittest.TestCase):
@@ -164,6 +192,45 @@ class BuildFilePairsTests(unittest.TestCase):
                 ("src/api.h", "lib/api.h"),
             ],
         )
+
+
+class CompareFilePairsTests(unittest.TestCase):
+    def test_calls_on_result_only_when_similar_functions_are_found(self) -> None:
+        repo_a = _repo(
+            "repo_a",
+            "src",
+            [
+                ("src/a.c", "c"),
+                ("src/b.c", "c"),
+            ],
+        )
+        repo_b = _repo(
+            "repo_b",
+            "lib",
+            [
+                ("lib/a.c", "c"),
+                ("lib/b.c", "c"),
+            ],
+        )
+        file_pairs = [
+            ("src/a.c", "lib/a.c"),
+            ("src/b.c", "lib/b.c"),
+        ]
+        seen: list[tuple[str, str]] = []
+
+        results = asyncio.run(
+            compare_file_pairs(
+                file_pairs,
+                repo_a,
+                repo_b,
+                _FakeClient(),
+                ScdConfig(),
+                on_similar_result=lambda result: seen.append((result.file_a, result.file_b)),
+            )
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(seen, [("src/b.c", "lib/b.c")])
 
 
 if __name__ == "__main__":

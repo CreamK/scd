@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import asdict
 from itertools import product
 from pathlib import Path
@@ -426,8 +427,9 @@ async def compare_file_pairs(
     client: LlmClient,
     config: ScdConfig,
     cache: PairCache | None = None,
+    on_similar_result: Callable[[CompareResult], None] | None = None,
 ) -> list[CompareResult]:
-    """Compare a pre-built list of file pairs, reusing cached results when available."""
+    """Compare file pairs, optionally streaming non-empty results as they finish."""
     progress: dict = {
         "total": len(file_pairs),
         "cached": 0,
@@ -437,15 +439,27 @@ async def compare_file_pairs(
         "log_every": 25,
     }
 
-    tasks = [
-        _compare_file_pair(
-            fa, fb, repo_a, repo_b, client,
+    async def run_one(index: int, file_a: str, file_b: str) -> tuple[int, CompareResult]:
+        result = await _compare_file_pair(
+            file_a, file_b, repo_a, repo_b, client,
             config.similarity_threshold, config.model,
             cache=cache, progress=progress,
         )
-        for fa, fb in file_pairs
+        return index, result
+
+    tasks = [
+        asyncio.create_task(run_one(i, fa, fb))
+        for i, (fa, fb) in enumerate(file_pairs)
     ]
-    results = await asyncio.gather(*tasks)
+    results_by_index: list[CompareResult | None] = [None] * len(tasks)
+
+    for task in asyncio.as_completed(tasks):
+        index, result = await task
+        results_by_index[index] = result
+        if on_similar_result is not None and result.similar_functions:
+            on_similar_result(result)
+
+    results = [r for r in results_by_index if r is not None]
 
     non_empty = [r for r in results if r.similar_functions]
     logger.info(

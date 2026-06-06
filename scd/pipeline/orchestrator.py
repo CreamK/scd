@@ -10,7 +10,7 @@ from rich.console import Console
 
 from scd.ai.client import LlmClient
 from scd.config import ScdConfig
-from scd.models import RepoScanResult, ScdReport
+from scd.models import CompareResult, RepoScanResult, ScdReport
 from scd.pipeline.dir_summarizer import summarize_repo
 from scd.pipeline.directory_matcher import (
     CONFIDENCE_ORDER,
@@ -257,8 +257,20 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
     else:
         console.print(f"  Checkpoint: [bold]{pair_cache.path}[/] (new)")
 
+    report_path, json_report_path = _report_paths(
+        repo_a_path, repo_b_path, config.output_path,
+    )
+    incremental_results: list[CompareResult] = []
+
+    def _save_incremental_report(result: CompareResult) -> None:
+        incremental_results.append(result)
+        report.compare_results = deduplicate_results(incremental_results)
+        report.total_ai_calls = client.total_calls
+        save_reports(report, report_path, json_report_path)
+
     raw_results = await compare_file_pairs(
         all_file_pairs, repo_a, repo_b, client, config, cache=pair_cache,
+        on_similar_result=_save_incremental_report,
     )
     report.compare_results = deduplicate_results(raw_results)
 
@@ -268,9 +280,6 @@ async def run_pipeline(repo_a_path: str, repo_b_path: str, config: ScdConfig) ->
 
     report.total_ai_calls = client.total_calls
 
-    report_path, json_report_path = _report_paths(
-        repo_a_path, repo_b_path, config.output_path,
-    )
     save_reports(report, report_path, json_report_path)
 
     total_time = time.monotonic() - t0
