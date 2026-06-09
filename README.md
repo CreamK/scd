@@ -124,7 +124,7 @@ scd compare /path/to/repo-a /path/to/repo-b --lang py,ts,tsx
 提高相似度阈值，只保留更相似的结果：
 
 ```bash
-scd compare /path/to/repo-a /path/to/repo-b --threshold 60
+scd compare /path/to/repo-a /path/to/repo-b --threshold 90
 ```
 
 当同一组目录同时匹配到父目录和子目录时，使用最高层目录进入函数比较：
@@ -142,7 +142,7 @@ scd compare /path/to/repo-a /path/to/repo-b --dir-match-depth highest
 | `-o, --output` | `output/<repo_a>_<repo_b>_report.md` | 指定 Markdown 报告文件路径，JSON 报告使用同名 `.json` 路径 |
 | `--output-dir` | `<repo_a>_<repo_b>_output` | 中间产物与缓存目录（不影响最终报告位置） |
 | `-r, --rps` | `3.0` | AI API 每秒最大请求数 |
-| `-t, --threshold` | `20` | 最低综合相似度分数，范围 0-100 |
+| `-t, --threshold` | `80` | 最低综合相似度分数，范围 0-100；实际不会低于严格模式底线 80 |
 | `-m, --model` | `gpt-4o-mini` | 使用的 LLM 模型名 |
 | `--api-key` | 环境变量 | API key，也可通过 `OPENAI_API_KEY` 设置 |
 | `--base-url` | 环境变量 | OpenAI-compatible API 地址 |
@@ -170,13 +170,13 @@ JSON 对比报告默认为 `output/<repo_a>_<repo_b>_report.json`，每个相似
 
 函数相似度会按以下维度评分：
 
-- Data Structure：函数里使用的数据结构、字段名、对象/字典键、集合形态是否相近。
-- Function Signature：函数名、参数名、参数顺序、类型和返回值是否相近。
-- Algorithm Logic：语句顺序、分支循环、关键操作、变量读写和调用链是否能按代码块对齐。
-- Naming Convention：变量、常量、辅助函数等具体标识符是否相近，并且是否以相似角色被使用。
-- Protocol Conformance：协议、接口或行为约定是否相近；这是辅助证据，不能单独让功能相似的代码被判为相似。
+- Data Structure（40%）：函数里使用的数据结构、字段名、对象/字典键、集合形态是否相近。
+- Function Signature（10%）：函数名、参数名、参数顺序、类型和返回值是否相近。
+- Algorithm Logic（40%）：语句顺序、分支循环、关键操作、变量读写和调用链是否能按代码块对齐。
+- Naming Convention（5%）：变量、常量、辅助函数等具体标识符是否相近，并且是否以相似角色被使用。
+- Protocol Conformance（5%）：协议、接口或行为约定是否相近；这是辅助证据，不能单独让功能相似的代码被判为相似。
 
-阶段 3 还会对核心维度做本地过滤：Data Structure 和 Algorithm Logic 都必须达到最低门槛；任一项过低时，即使综合分达到阈值，也不会输出为相似函数。
+阶段 3 还会对核心维度做严格本地过滤：综合分必须达到 `max(--threshold, 80)`，同时 Data Structure >= 75、Algorithm Logic >= 80、Naming Convention >= 50；任一项过低时，即使模型返回了结果，也不会输出为相似函数。
 
 中间产物说明：
 

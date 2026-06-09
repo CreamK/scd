@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import tempfile
 import unittest
 
 from scd.config import ScdConfig
 from scd.models import DirInfo, DirMatch, FileInfo, RepoScanResult
 from scd.pipeline.function_comparer import (
+    PairCache,
     build_all_file_pairs,
     compare_file_pairs,
     _parse_similar_functions,
@@ -25,7 +28,11 @@ def _repo(root: str, dir_path: str, files: list[tuple[str, str]]) -> RepoScanRes
 
 
 class _FakeClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def ask_json(self, _system: str, user: str, **_kwargs: object) -> dict:
+        self.calls += 1
         if "src/b.c" in user:
             return {
                 "similar_functions": [
@@ -76,13 +83,13 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
                     "func_a": {"name": "normalize_user", "line_start": 3, "line_end": 18},
                     "func_b": {"name": "normalize_user", "line_start": 8, "line_end": 23},
                     "scores": {
-                        "data_structure": 76,
+                        "data_structure": 88,
                         "function_signature": 70,
-                        "algorithm_logic": 74,
+                        "algorithm_logic": 90,
                         "naming_convention": 80,
                         "protocol_conformance": 50,
                     },
-                    "composite_score": 72,
+                    "composite_score": 88,
                     "similarity_level": "high",
                     "analysis": "Both functions use the same user dict fields, local names, and branch flow.",
                 }
@@ -116,29 +123,49 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
 
         self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
 
-    def test_keeps_pair_when_only_naming_convention_is_below_gate(self) -> None:
+    def test_filters_pair_when_naming_convention_is_below_strict_gate(self) -> None:
         data = {
             "similar_functions": [
                 {
                     "func_a": {"name": "normalize_user", "line_start": 3, "line_end": 18},
                     "func_b": {"name": "clean_record", "line_start": 8, "line_end": 23},
                     "scores": {
-                        "data_structure": 70,
+                        "data_structure": 88,
                         "function_signature": 50,
-                        "algorithm_logic": 74,
+                        "algorithm_logic": 90,
                         "naming_convention": 20,
                         "protocol_conformance": 50,
                     },
-                    "composite_score": 64,
+                    "composite_score": 80,
                     "similarity_level": "high",
                     "analysis": "The data structures and implementation flow align despite different names.",
                 }
             ]
         }
 
-        results = _parse_similar_functions(data, "a.py", "b.py", threshold=20)
+        self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
 
-        self.assertEqual(len(results), 1)
+    def test_filters_pair_when_composite_is_below_strict_gate(self) -> None:
+        data = {
+            "similar_functions": [
+                {
+                    "func_a": {"name": "normalize_user", "line_start": 3, "line_end": 18},
+                    "func_b": {"name": "normalize_user", "line_start": 8, "line_end": 23},
+                    "scores": {
+                        "data_structure": 85,
+                        "function_signature": 50,
+                        "algorithm_logic": 85,
+                        "naming_convention": 50,
+                        "protocol_conformance": 50,
+                    },
+                    "composite_score": 90,
+                    "similarity_level": "high",
+                    "analysis": "Core dimensions pass, but recomputed composite is below the strict gate.",
+                }
+            ]
+        }
+
+        self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
 
     def test_filters_pair_below_configured_threshold(self) -> None:
         data = {
@@ -261,6 +288,62 @@ class CompareFilePairsTests(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual(seen, [("src/b.c", "lib/b.c")])
+
+    def test_thresholds_below_strict_floor_share_pair_cache_key(self) -> None:
+        repo_a = _repo("repo_a", "src", [("src/b.c", "c")])
+        repo_b = _repo("repo_b", "lib", [("lib/b.c", "c")])
+        file_pairs = [("src/b.c", "lib/b.c")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first_cache = PairCache(tmp)
+            first_client = _FakeClient()
+            asyncio.run(
+                compare_file_pairs(
+                    file_pairs,
+                    repo_a,
+                    repo_b,
+                    first_client,
+                    ScdConfig(similarity_threshold=20),
+                    cache=first_cache,
+                )
+            )
+
+            second_cache = PairCache(tmp)
+            second_cache.load()
+            second_client = _FakeClient()
+            asyncio.run(
+                compare_file_pairs(
+                    file_pairs,
+                    repo_a,
+                    repo_b,
+                    second_client,
+                    ScdConfig(similarity_threshold=80),
+                    cache=second_cache,
+                )
+            )
+
+        self.assertEqual(first_client.calls, 1)
+        self.assertEqual(second_client.calls, 0)
+
+    def test_pair_cache_load_skips_records_from_old_cache_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = PairCache(tmp)
+            cache.path.write_text(
+                json.dumps(
+                    {
+                        "v": 3,
+                        "key": "legacy",
+                        "file_a": "src/a.c",
+                        "file_b": "lib/a.c",
+                        "similar_functions": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(cache.load(), 0)
+            self.assertIsNone(cache.get("legacy"))
 
 
 if __name__ == "__main__":

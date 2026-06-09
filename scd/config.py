@@ -53,7 +53,7 @@ class ScdConfig:
     api_key: str | None = None
     base_url: str | None = None
     rps: float = 3.0
-    similarity_threshold: int = 20
+    similarity_threshold: int = 80
     max_file_lines: int = 10000
     model: str = "gpt-4o-mini"
     output_path: str | None = None

@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 PAIR_CACHE_DIR_NAME = ".scd_cache"
 PAIR_CACHE_FILE_NAME = "pair_results.jsonl"
 PAIR_CACHE_VERSION = 3
-IMPLEMENTATION_CORE_MIN_SCORE = 60
+STRICT_COMPOSITE_MIN_SCORE = 80
+DATA_STRUCTURE_MIN_SCORE = 75
+ALGORITHM_LOGIC_MIN_SCORE = 80
+NAMING_CONVENTION_MIN_SCORE = 50
 
 
 def compute_pair_key(
@@ -131,6 +134,8 @@ class PairCache:
                     continue
                 try:
                     data = json.loads(line)
+                    if data.get("v") != PAIR_CACHE_VERSION:
+                        continue
                     key = data["key"]
                     self._store[key] = _record_to_result(data)
                     count += 1
@@ -252,12 +257,13 @@ def _passes_implementation_similarity_gate(
     threshold: int,
 ) -> bool:
     """Require visible implementation overlap, not only functional equivalence."""
-    if composite_score < threshold:
+    if composite_score < max(threshold, STRICT_COMPOSITE_MIN_SCORE):
         return False
 
     return (
-        scores.data_structure >= IMPLEMENTATION_CORE_MIN_SCORE
-        and scores.algorithm_logic >= IMPLEMENTATION_CORE_MIN_SCORE
+        scores.data_structure >= DATA_STRUCTURE_MIN_SCORE
+        and scores.algorithm_logic >= ALGORITHM_LOGIC_MIN_SCORE
+        and scores.naming_convention >= NAMING_CONVENTION_MIN_SCORE
     )
 
 
@@ -363,9 +369,12 @@ async def _compare_file_pair(
             progress["skipped"] = progress.get("skipped", 0) + 1
         return CompareResult(file_a=file_a, file_b=file_b)
 
+    effective_threshold = max(threshold, STRICT_COMPOSITE_MIN_SCORE)
     cache_key: str | None = None
     if cache is not None:
-        cache_key = compute_pair_key(file_a, code_a, file_b, code_b, model, threshold)
+        cache_key = compute_pair_key(
+            file_a, code_a, file_b, code_b, model, effective_threshold,
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             if progress is not None:
@@ -373,7 +382,7 @@ async def _compare_file_pair(
             return cached
 
     system = FUNCTION_COMPARE_SYSTEM.format(
-        threshold=threshold,
+        threshold=effective_threshold,
         file_a=file_a,
         file_b=file_b,
     )
@@ -385,7 +394,7 @@ async def _compare_file_pair(
 
     try:
         data = await client.ask_json(system, user)
-        similar = _parse_similar_functions(data, file_a, file_b, threshold)
+        similar = _parse_similar_functions(data, file_a, file_b, effective_threshold)
         result = CompareResult(file_a=file_a, file_b=file_b, similar_functions=similar)
         if cache is not None and cache_key is not None:
             await cache.put(cache_key, result)

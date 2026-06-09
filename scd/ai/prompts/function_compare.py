@@ -69,9 +69,18 @@ Rules:
 - `func_b` MUST come from File B only, and its `file` field MUST be exactly `{file_b}`.
 - Never report two functions from File A as a pair. Never report two functions from File B as a pair.
 - If you find internal similarity within one file, ignore it; this task is ONLY cross-file File A vs File B similarity.
-- Only report pairs with composite score >= {threshold}.
-- Also require data_structure >= 60 and algorithm_logic >= 60.
-  If either score is below 60, do not report the pair regardless of composite score.
+- Only report pairs with composite score >= {threshold}. This is a strict code-expression gate, not a functional-similarity gate.
+- Also require ALL of these dimension gates:
+  - data_structure >= 75
+  - algorithm_logic >= 80
+  - naming_convention >= 50
+  If any required dimension is below its gate, do not report the pair regardless of composite score.
+- For C/C++, do not treat common boilerplate as strong evidence: ordinary NULL checks,
+  length checks, init/free patterns, errno-style returns, switch/loop scaffolding,
+  standard library calls, or required protocol/API conformance are insufficient by themselves.
+- Report only when the concrete expression is highly aligned: field/member names,
+  buffer offsets, constants/macros/error codes, helper calls, variable roles, and
+  statement sequences should be visibly comparable block-by-block.
 - Source code is provided with explicit line-number prefixes in the form `   N | <code>`,
   where N is the authoritative 1-based line number. ALWAYS read line numbers directly
   from this prefix when filling `line_start` / `line_end`. NEVER count lines yourself.

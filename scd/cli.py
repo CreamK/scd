@@ -34,7 +34,7 @@ def main() -> None:
 @click.option("-o", "--output", default=None, help="Markdown report file path (JSON report uses the same stem).")
 @click.option("--output-dir", default=None, help="Output directory for all artifacts (default: <repo_a>_<repo_b>_output).")
 @click.option("-r", "--rps", default=3.0, type=float, help="Max requests per second to the AI API.")
-@click.option("-t", "--threshold", default=20, type=int, help="Minimum composite similarity score (0-100, default 20).")
+@click.option("-t", "--threshold", default=80, type=int, help="Minimum composite similarity score (0-100, default 80).")
 @click.option("-m", "--model", default="gpt-4o-mini", help="LLM model name (OpenAI-compatible).")
 @click.option("--api-key", envvar="OPENAI_API_KEY", default=None, help="API key (or set OPENAI_API_KEY env var).")
 @click.option("--base-url", envvar="OPENAI_BASE_URL", default=None, help="OpenAI-compatible endpoint base URL, e.g. https://your-gateway/v1 (or set OPENAI_BASE_URL env var).")
