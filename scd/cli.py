@@ -48,6 +48,7 @@ def main() -> None:
     help="Directory overlap strategy before function comparison: deepest or highest (default deepest).",
 )
 @click.option("--max-in-flight", envvar="SCD_MAX_IN_FLIGHT", default=8, type=int, help="Hard cap on concurrent LLM requests (default 8; or set SCD_MAX_IN_FLIGHT env var).")
+@click.option("--context-window", default=128_000, type=int, help="Model context window in tokens; oversized file pairs are chunked to fit (default 128000).")
 @click.option("--json-mode/--no-json-mode", default=None, help="Force response_format=json_object on 2b/3 (auto-downgrades if endpoint rejects).")
 @click.option("--parallel-tool-calls/--no-parallel-tool-calls", default=None, help="Allow parallel tool_calls in 2a (auto-downgrades if endpoint rejects).")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
@@ -66,6 +67,7 @@ def compare(
     match_batch_size: int,
     dir_match_depth: str | None,
     max_in_flight: int,
+    context_window: int,
     json_mode: bool | None,
     parallel_tool_calls: bool | None,
     verbose: bool,
@@ -88,6 +90,8 @@ def compare(
         match_batch_size = int(env["MATCH_BATCH_SIZE"])
     if max_in_flight == 8 and env.get("MAX_IN_FLIGHT"):
         max_in_flight = int(env["MAX_IN_FLIGHT"])
+    if context_window == 128_000 and env.get("CONTEXT_WINDOW"):
+        context_window = int(env["CONTEXT_WINDOW"])
 
     def _parse_bool(raw: str | None) -> bool | None:
         if raw is None:
@@ -132,6 +136,7 @@ def compare(
         shallow=shallow,
         match_batch_size=match_batch_size,
         max_in_flight=max_in_flight,
+        context_window=context_window,
         use_json_mode=json_mode,
         parallel_tool_calls=parallel_tool_calls,
         dir_confidence=dir_confidence,

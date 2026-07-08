@@ -56,6 +56,10 @@ class ScdConfig:
     similarity_threshold: int = 80
     max_file_lines: int = 10000
     model: str = "gpt-4o-mini"
+    # Model context window in tokens. Phase 3 derives its per-pair input
+    # budget from this; file pairs that exceed the budget are split into
+    # chunks along function boundaries and compared chunk-by-chunk.
+    context_window: int = 128_000
     output_path: str | None = None
     # When None, the pipeline auto-generates "{repo_a_name}_{repo_b_name}_output".
     output_dir: str | None = None

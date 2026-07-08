@@ -11,7 +11,12 @@ from scd.pipeline.function_comparer import (
     PairCache,
     build_all_file_pairs,
     compare_file_pairs,
+    pair_token_budget,
+    split_code_into_chunks,
+    _annotate_with_line_numbers,
+    _estimate_code_tokens,
     _parse_similar_functions,
+    _plan_pair_chunks,
 )
 
 
@@ -218,6 +223,183 @@ class ParseSimilarFunctionsTests(unittest.TestCase):
         }
 
         self.assertEqual(_parse_similar_functions(data, "a.py", "b.py", threshold=20), [])
+
+
+def _fake_source(func_count: int, body_lines: int = 8) -> str:
+    """Generate a Python-like file with column-0 function definitions."""
+    parts: list[str] = []
+    for i in range(func_count):
+        parts.append(f"def func_{i}(value):")
+        for j in range(body_lines):
+            parts.append(f"    value = value + {j}  # step {j} of func_{i}")
+        parts.append("    return value")
+        parts.append("")
+    return "\n".join(parts)
+
+
+class ChunkingTests(unittest.TestCase):
+    def test_annotate_keeps_original_line_numbers_for_chunks(self) -> None:
+        annotated = _annotate_with_line_numbers("foo\nbar", start_line=42)
+        lines = annotated.splitlines()
+        self.assertTrue(lines[0].endswith("| foo"))
+        self.assertTrue(lines[0].strip().startswith("42"))
+        self.assertTrue(lines[1].strip().startswith("43"))
+
+    def test_split_reconstructs_file_and_respects_budget(self) -> None:
+        code = _fake_source(func_count=40)
+        max_tokens = _estimate_code_tokens(code) // 4
+
+        chunks = split_code_into_chunks(code, max_tokens)
+
+        self.assertGreater(len(chunks), 1)
+        # Chunks are contiguous, ordered, and cover the whole file.
+        self.assertEqual(chunks[0].start_line, 1)
+        for prev, cur in zip(chunks, chunks[1:]):
+            self.assertEqual(cur.start_line, prev.end_line + 1)
+        self.assertEqual(chunks[-1].end_line, len(code.splitlines()))
+        # Trailing-newline-insensitive: chunking is line-based.
+        self.assertEqual(
+            "\n".join(c.code for c in chunks),
+            "\n".join(code.splitlines()),
+        )
+        for chunk in chunks:
+            self.assertLessEqual(_estimate_code_tokens(chunk.code), max_tokens)
+
+    def test_split_prefers_function_boundaries(self) -> None:
+        code = _fake_source(func_count=40)
+        max_tokens = _estimate_code_tokens(code) // 4
+
+        chunks = split_code_into_chunks(code, max_tokens)
+
+        for chunk in chunks:
+            first_nonempty = next(
+                line for line in chunk.code.splitlines() if line.strip()
+            )
+            self.assertTrue(
+                first_nonempty.startswith("def "),
+                f"chunk starts mid-function: {first_nonempty!r}",
+            )
+
+    def test_small_pair_stays_whole(self) -> None:
+        code_a = _fake_source(3)
+        code_b = _fake_source(4)
+
+        chunks_a, chunks_b = _plan_pair_chunks(
+            code_a, code_b, pair_token_budget(128_000),
+        )
+
+        self.assertEqual(len(chunks_a), 1)
+        self.assertEqual(len(chunks_b), 1)
+        self.assertEqual(chunks_a[0].code, code_a)
+
+    def test_only_oversized_side_is_split(self) -> None:
+        code_a = _fake_source(60)
+        code_b = _fake_source(2)
+        budget = _estimate_code_tokens(code_a) // 2
+
+        chunks_a, chunks_b = _plan_pair_chunks(code_a, code_b, budget)
+
+        self.assertGreater(len(chunks_a), 1)
+        self.assertEqual(len(chunks_b), 1)
+
+
+class _ChunkAwareFakeClient:
+    """Reports a similar pair only for the request containing both marker functions."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def ask_json(self, _system: str, user: str, **_kwargs: object) -> dict:
+        self.calls += 1
+        if "def target_alpha" not in user or "def target_beta" not in user:
+            return {"similar_functions": []}
+        return {
+            "similar_functions": [
+                {
+                    "func_a": {"name": "target_alpha", "line_start": 1, "line_end": 5},
+                    "func_b": {"name": "target_beta", "line_start": 1, "line_end": 5},
+                    "scores": {
+                        "data_structure": 85,
+                        "function_signature": 80,
+                        "algorithm_logic": 85,
+                        "naming_convention": 80,
+                        "protocol_conformance": 80,
+                    },
+                    "analysis": "Both build the same dict and call the same helper.",
+                }
+            ]
+        }
+
+
+class ChunkedComparisonTests(unittest.TestCase):
+    def test_oversized_pair_is_chunked_and_findings_are_merged(self) -> None:
+        code_a = _fake_source(30) + "\ndef target_alpha(value):\n    return value\n"
+        code_b = "def target_beta(value):\n    return value\n\n" + _fake_source(30)
+        repo_a = RepoScanResult(
+            root_path="repo_a",
+            dirs={"src": DirInfo(path="src", files=[FileInfo("src/big.py", "python", 1)])},
+            file_contents={"src/big.py": code_a},
+        )
+        repo_b = RepoScanResult(
+            root_path="repo_b",
+            dirs={"lib": DirInfo(path="lib", files=[FileInfo("lib/big.py", "python", 1)])},
+            file_contents={"lib/big.py": code_b},
+        )
+        client = _ChunkAwareFakeClient()
+        # Force chunking: budget only fits about half of each file per request.
+        # pair_token_budget floors at 2000, so pick a window just above that.
+        config = ScdConfig(context_window=11_500)
+
+        results = asyncio.run(
+            compare_file_pairs(
+                [("src/big.py", "lib/big.py")], repo_a, repo_b, client, config,
+            )
+        )
+
+        self.assertGreater(client.calls, 1)
+        self.assertEqual(len(results), 1)
+        names = {
+            (sf.func_a.name, sf.func_b.name)
+            for sf in results[0].similar_functions
+        }
+        self.assertEqual(names, {("target_alpha", "target_beta")})
+
+    def test_chunk_results_are_cached_per_chunk(self) -> None:
+        code_a = _fake_source(30)
+        code_b = _fake_source(30)
+        repo_a = RepoScanResult(
+            root_path="repo_a",
+            dirs={"src": DirInfo(path="src", files=[FileInfo("src/big.py", "python", 1)])},
+            file_contents={"src/big.py": code_a},
+        )
+        repo_b = RepoScanResult(
+            root_path="repo_b",
+            dirs={"lib": DirInfo(path="lib", files=[FileInfo("lib/big.py", "python", 1)])},
+            file_contents={"lib/big.py": code_b},
+        )
+        config = ScdConfig(context_window=11_500)
+        pair = [("src/big.py", "lib/big.py")]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first_client = _ChunkAwareFakeClient()
+            asyncio.run(
+                compare_file_pairs(
+                    pair, repo_a, repo_b, first_client, config,
+                    cache=PairCache(tmp),
+                )
+            )
+            self.assertGreater(first_client.calls, 1)
+
+            second_cache = PairCache(tmp)
+            second_cache.load()
+            second_client = _ChunkAwareFakeClient()
+            asyncio.run(
+                compare_file_pairs(
+                    pair, repo_a, repo_b, second_client, config,
+                    cache=second_cache,
+                )
+            )
+            self.assertEqual(second_client.calls, 0)
 
 
 class BuildFilePairsTests(unittest.TestCase):
